@@ -33,6 +33,66 @@
 
 ---
 
+## 项目由两部分组成（重要！）
+
+很多新手以为 `docker compose up -d` 把容器起起来项目就能跑了。**不是**。这个项目实际上有**两个独立的组件**，两个都要准备好：
+
+```
+  ┌─────────────────────────────┐        ┌─────────────────────────────┐
+  │ 组件 A：向量数据库            │        │ 组件 B：嵌入模型              │
+  │ (跑在 Docker 容器里)          │        │ (跑在你本机 Python 里)         │
+  │                             │        │                             │
+  │ Qdrant / Weaviate / Milvus   │        │ sentence-transformers +      │
+  │ 存向量、建索引、做检索         │        │ 下载下来的模型权重文件         │
+  │                             │        │ 负责：文字 → 向量             │
+  │ 通过 docker compose 启动      │        │ 通过 pip install + 下载模型   │
+  └─────────────────────────────┘        └─────────────────────────────┘
+              ▲                                         │
+              │   ingest.py 把向量写进去  ◄──────────────┘
+              │   search.py 拿查询向量去搜
+```
+
+**为什么分成两部分？** 向量数据库本身不懂文字，只认向量。把文字变成向量的活儿（嵌入）通常由应用层（Python 代码 + 模型）完成。这种架构让你可以随意换模型，数据库不用改。
+
+---
+
+## 三步部署（完整流程）
+
+```bash
+# ─── 步骤 1：准备组件 B（嵌入模型）────────────────────────────────
+cd semantic-sandbox
+python3 -m venv .venv && source .venv/bin/activate
+
+# 🇨🇳 国内网络先跑这行再继续（跳过 HuggingFace 官方站点直连）
+# export HF_ENDPOINT=https://hf-mirror.com
+
+pip install sentence-transformers python-dotenv       # 会顺带装 PyTorch，约 1-2GB，几分钟
+python scripts/preload_model.py                        # 下载两个模型（约 185MB），缓存到 ./models/
+
+# ─── 步骤 2：准备组件 A（向量数据库，以 qdrant 为例）─────────────
+cd qdrant-demo
+cp .env.example .env
+docker compose up -d                                   # 启动数据库容器
+pip install -r requirements.txt                        # 装 qdrant 客户端
+
+# ─── 步骤 3：跑业务代码（入库 + 搜索）─────────────────────────────
+python -m src.ingest                                   # 文本 → 向量 → 写入数据库
+python -m src.search                                   # 交互式语义搜索
+```
+
+**想换个数据库？** 回到项目根目录，`cd weaviate-demo` 或 `cd milvus-demo`，重复步骤 2-3 即可。组件 B（模型）已经下过了，不用再下。
+
+> **为什么推荐从 Qdrant 开始？** 单容器、启动最快（约 3 秒）、内存占用最小（≥1GB 就行）。流程跑通后再试 Weaviate 和 Milvus，对比三者 API 差异。
+
+> **关于模型缓存**：本项目把模型下载到**项目内的 `./models/` 目录**（不是系统级的 `~/.cache/huggingface/`），好处是：
+> - 模型"跟项目走"，拷贝项目目录到别的机器，模型一起带过去，不用重新下载
+> - 多个虚拟环境都用同一份模型，不会重复占盘
+> - 三个子项目共用这一份缓存
+>
+> 但 `models/` 目录在 `.gitignore` 里，**不会提交到 GitHub**（单文件就超 GitHub 100MB 上限，也不该进 Git）。新克隆仓库的人需要自己跑一次 `preload_model.py`。
+
+---
+
 ## 这个项目解决什么问题
 
 向量数据库的官方文档通常各写各的，术语不统一（Milvus 叫 *collection*，Weaviate 叫 *class/collection*，Qdrant 也叫 *collection* 但字段叫 *payload*），新手很容易被细节劝退。
@@ -85,34 +145,6 @@ docker compose version
 
 ---
 
-## 快速开始（以 Qdrant 为例，**推荐最先跑这个**，最轻量）
-
-```bash
-# 1) 克隆后进入项目
-cd semantic-sandbox
-
-# 2) 复制公共配置（选嵌入模型）
-cp .env.example .env
-
-# 3) 预下载嵌入模型（约 185MB，一次搞定，三个子项目共用）
-python3 -m venv .venv && source .venv/bin/activate
-
-# ⚠️ 首次 pip install 会顺带装 PyTorch（sentence-transformers 的依赖），约 1-2GB，要等几分钟
-pip install sentence-transformers python-dotenv
-
-# 🇨🇳 国内网络访问 HuggingFace 慢/不通时，先 export 这个再运行 preload：
-# export HF_ENDPOINT=https://hf-mirror.com
-python scripts/preload_model.py
-
-# 4) 进入 qdrant 子项目，按它的 README 继续
-cd qdrant-demo
-cat README.md
-```
-
-> 为什么推荐 Qdrant 先跑：单容器、启动最快、资源占用最小。熟悉流程后再试 Weaviate 和 Milvus。
-
----
-
 ## 三者对比速查
 
 | 项 | Milvus | Weaviate | Qdrant |
@@ -139,12 +171,15 @@ cat README.md
 
 > ⚠️ **换模型后维度会变**，已建好的 collection 必须删掉重建。每个子项目的 `ingest.py` 启动时会校验维度，不一致会报错提示。
 
-模型默认缓存到 `~/.cache/huggingface/`，是**用户级缓存**，三个子项目天然共享，不会重复下载。
+模型缓存到项目内的 **`./models/`** 目录（不是系统级的 `~/.cache/huggingface/`），三个子项目共用这一份缓存。该目录已被 `.gitignore` 忽略，不会进仓库。
 
-**国内网络提示**：HuggingFace 直连经常超时。用镜像站（放在 shell 配置里一劳永逸）：
+**国内网络提示**：HuggingFace 直连经常超时。用镜像站：
 ```bash
-# 加到 ~/.zshrc 或 ~/.bashrc
+# 临时生效（当前终端）
 export HF_ENDPOINT=https://hf-mirror.com
+
+# 永久生效（加到 ~/.zshrc 或 ~/.bashrc）
+echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.zshrc
 ```
 
 ---

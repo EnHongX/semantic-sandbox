@@ -24,6 +24,11 @@ from sentence_transformers import SentenceTransformer
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+# 模型下载到 项目根/models/，三个子项目共用这一份缓存。
+# 这样模型就"跟着项目走"，不会散落到 ~/.cache 里。
+MODEL_CACHE = ROOT / "models"
+MODEL_CACHE.mkdir(parents=True, exist_ok=True)
+
 MODELS = [
     "sentence-transformers/all-MiniLM-L6-v2",  # 英文/多语言, 384 维
     "BAAI/bge-small-zh-v1.5",                   # 中文, 512 维
@@ -31,9 +36,8 @@ MODELS = [
 
 
 def main() -> int:
-    hf_home = os.environ.get("HF_HOME", "~/.cache/huggingface")
     hf_endpoint = os.environ.get("HF_ENDPOINT")
-    print(f"[info] 模型缓存目录: {os.path.expanduser(hf_home)}")
+    print(f"[info] 模型缓存目录: {MODEL_CACHE}")
     if hf_endpoint:
         print(f"[info] HF_ENDPOINT={hf_endpoint} (使用镜像)")
     else:
@@ -43,14 +47,14 @@ def main() -> int:
     for name in MODELS:
         print(f"[下载] {name}")
         try:
-            model = SentenceTransformer(name)
+            model = SentenceTransformer(name, cache_folder=str(MODEL_CACHE))
             dim = model.get_sentence_embedding_dimension()
             print(f"[完成] {name}  维度={dim}\n")
         except Exception as exc:  # noqa: BLE001
             print(f"[失败] {name}: {exc}\n", file=sys.stderr)
             return 1
 
-    print("全部就绪。后续子项目直接从缓存加载，秒开。")
+    print(f"全部就绪。模型已保存到 {MODEL_CACHE}，后续子项目直接加载，无需联网。")
     return 0
 
 

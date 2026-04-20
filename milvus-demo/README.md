@@ -1,0 +1,188 @@
+# milvus-demo
+
+用 [Milvus](https://milvus.io/) 实现的"入库 + 语义检索"示例。
+
+Milvus 是三个库里概念最多、启动最重的（要同时跑 **etcd + minio + milvus** 三个容器），但它也是生产环境大规模向量场景里用得最多的。学习它对理解"为什么向量库是一个独立系统，而不是一个 Python 库"很有帮助。
+
+---
+
+## 目录结构
+
+```
+milvus-demo/
+├── README.md
+├── docker-compose.yml     启动 Milvus standalone（含 etcd / minio / 可选 Attu Web UI）
+├── requirements.txt       Python 依赖（pymilvus v2.5）
+├── .env.example
+└── src/
+    ├── config.py
+    ├── embedder.py        文本 → 向量
+    ├── ingest.py          建集合 + 索引 + 入库
+    └── search.py          交互式检索
+```
+
+---
+
+## 一步步跑起来
+
+### 0. 先确认 Docker 内存给够
+
+⚠️ **Docker Desktop 默认分配的内存通常 ≤ 2GB，Milvus 起不来。**
+
+打开 Docker Desktop → Settings → Resources → Memory，调到 **至少 4GB**，再继续。
+
+### 1. 启动 Milvus
+
+```bash
+cd milvus-demo
+docker compose up -d
+
+# 启动要 30~60 秒，等它变 healthy
+docker compose ps
+```
+
+`STATUS` 列都变成 `healthy` 或 `running` 再继续。如果 milvus 容器一直 restarting，`docker compose logs milvus` 看日志，90% 是内存不足。
+
+验证：
+```bash
+curl http://localhost:9091/healthz    # 返回 "OK"
+```
+
+**附带的可视化 UI**：
+- Attu（Milvus 官方管理界面）：<http://localhost:8000>
+- MinIO 控制台：<http://localhost:9001> 账号密码都是 `minioadmin`（只是看对象存储，一般用不上）
+
+### 2. 装 Python 依赖
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+> ⚠️ 首次安装会顺带拉 PyTorch（`sentence-transformers` 的依赖），约 **1-2GB**，需要几分钟。
+>
+> 🇨🇳 国内 HuggingFace 下载慢可以先 `export HF_ENDPOINT=https://hf-mirror.com`。
+
+### 3. 配置环境变量
+
+```bash
+cp .env.example .env
+```
+
+中文场景：
+```bash
+EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+DATA_FILE=../data/sample_zh.json
+```
+
+### 4. 入库
+
+```bash
+python -m src.ingest
+```
+
+预期输出：
+```
+[ingest] 读取数据: .../data/sample_en.json
+[embedder] 加载模型: sentence-transformers/all-MiniLM-L6-v2
+[ingest] 连接 Milvus http://localhost:19530 / 向量维度=384
+[ingest] 创建集合 sandbox_docs (维度=384, 距离=COSINE)
+[ingest] 写入 10 条 → sandbox_docs
+[ingest] 完成。集合中共有 10 条。
+```
+
+### 5. 搜索
+
+```bash
+python -m src.search
+```
+
+```
+> how does machine learning work
+查询: how does machine learning work
+------------------------------------------------------------
+1. score=0.5921  id=4
+   Machine learning is a subfield of artificial intelligence focused on data-driven models.
+2. score=0.2340  id=2
+   Python is a high-level programming language known for its readability.
+...
+```
+
+> Milvus 在 `COSINE` 指标下，`search` 返回的 `distance` 字段实际上是**相似度**（-1 ~ 1，越大越相似），不是距离 —— 这是 Milvus 的一个小坑，代码注释里有提。
+
+---
+
+## 换数据 / 换模型
+
+### 换数据
+
+```bash
+python -m src.ingest /path/to/your_data.json
+```
+
+`ingest.py` 用的是 `upsert`（按 id 覆盖），同一个 id 重跑不会重复。
+
+### 换模型
+
+改 `.env` 的 `EMBEDDING_MODEL` 后维度会变，需要先删旧集合：
+
+```bash
+python -c "from pymilvus import MilvusClient; MilvusClient('http://localhost:19530').drop_collection('sandbox_docs')"
+python -m src.ingest
+```
+
+或者用 Attu Web UI 手动删除集合，一样效果。
+
+---
+
+## 代码里这些概念对应什么
+
+| 代码 | Milvus 里的概念 |
+|---|---|
+| `MilvusClient(uri=...)` | 新版客户端入口，比老的 `connections.connect` 简单 |
+| `client.create_schema(...)` + `add_field(...)` | 集合 schema，指定主键、向量字段、业务字段 |
+| `DataType.FLOAT_VECTOR` | 向量字段；`dim=384` 必须写死 |
+| `enable_dynamic_field=True` | 允许写入 schema 之外的字段（存在 `$meta` 里） |
+| `prepare_index_params()` + `AUTOINDEX` | 向量索引。学习场景 AUTOINDEX 让 Milvus 自己挑 |
+| `metric_type="COSINE"` | 距离度量；也可以是 `L2`、`IP` |
+| `client.upsert(...)` | 按主键插入/更新 |
+| `client.flush(...)` | 强制把数据从内存刷到持久化存储（否则搜索可能漏新数据） |
+| `client.load_collection(...)` | **搜索前必须加载**，把集合加载进内存，这是 Milvus 比较特别的一点 |
+| `client.search(...)` | 检索，返回 `List[List[Hit]]`，多查询批量时外层就是每个查询 |
+
+---
+
+## 停止和清理
+
+```bash
+docker compose down             # 停三个容器
+docker compose down -v          # 连 volume 一起删
+rm -rf volumes/                 # 手动删除本地数据目录（etcd / minio / milvus 都在里面）
+```
+
+---
+
+## 常见问题
+
+**Q: milvus 容器 `Exited (137)` 或不停重启**
+A: 绝大多数是 OOM。检查 Docker 内存分配（上面第 0 步），改到 ≥4GB。
+
+**Q: `load_collection` 报 "collection not loaded"**
+A: 本项目的 `search.py` 启动时就会调用 `load_collection`，不会有这个问题。如果你自己写脚本，**搜索前必须先 load**，这是 Milvus 的强制流程（Qdrant / Weaviate 没有这一步）。
+
+**Q: 新入的数据搜不到**
+A: 可能还没刷盘。入库后显式调用 `client.flush(collection_name)`，本项目的 `ingest.py` 已经这么做了。
+
+**Q: 为什么 `score` 有时候是负数？**
+A: COSINE 相似度范围是 [-1, 1]，负数表示方向相反。如果看到负数结果，说明库里没有跟查询语义相近的内容。
+
+---
+
+## 生产注意事项（学完可忽略）
+
+- **开启认证**：`MilvusClient(uri=..., token="user:pass")`；docker-compose 需要配置 `common.security.authorizationEnabled=true`
+- **standalone vs cluster**：本 demo 是 standalone（单机）。生产推荐 cluster 模式，写读分离、能水平扩展
+- **索引选型**：`AUTOINDEX` 在云上是 Milvus 自家实现，开源版默认到 HNSW。大数据量下要手选（IVF_FLAT / IVF_PQ / DISKANN 等）并调参
+- **数据分区（partition）**：可以按业务维度（比如租户 id）分区，检索时指定分区提升性能
+- **备份**：用官方 `milvus-backup` 工具

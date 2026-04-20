@@ -1,0 +1,19 @@
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.27.6
+    container_name: sandbox-weaviate
+    ports:
+      - "8080:8080"   # REST
+      - "50051:50051" # gRPC (v4 客户端走这个端口)
+    environment:
+      # 关闭匿名鉴权要求后允许无鉴权访问，仅用于本地学习
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      QUERY_DEFAULTS_LIMIT: 25
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      # 我们自己在 Python 端算向量，Weaviate 不用再挂模型
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ""
+      CLUSTER_HOSTNAME: node1
+    volumes:
+      - ./weaviate_data:/var/lib/weaviate
+    restart: unless-stopped

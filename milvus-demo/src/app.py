@@ -48,6 +48,16 @@ def _get_client() -> MilvusClient:
     return MilvusClient(uri=MILVUS_URI)
 
 
+_CONN_KEYWORDS = ("connection refused", "connect call failed", "timed out", "failed to connect", "errno 111", "unreachable")
+
+
+def _fmt_exc(exc: Exception) -> str:
+    msg = str(exc)
+    if any(k in msg.lower() for k in _CONN_KEYWORDS):
+        return "向量数据库未连接，请先在 milvus-demo/ 目录执行 docker compose up -d 启动服务（Milvus 首次启动约需 30 秒）"
+    return msg
+
+
 def _load_user_data() -> list[dict]:
     if _USER_DATA_FILE.exists():
         return json.loads(_USER_DATA_FILE.read_text(encoding="utf-8"))
@@ -111,6 +121,19 @@ class SearchResult(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     results: list[SearchResult]
+
+
+# ─── 健康检查 ─────────────────────────────────────────────────────────────────
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    try:
+        client = _get_client()
+        client.list_collections()
+        return {"status": "ok", "db": "milvus"}
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail=_fmt_exc(exc))
 
 
 # ─── REST API ──────────────────────────────────────────────────────────────────
@@ -232,7 +255,7 @@ async def search_form(
             for h in hits
         ]
     except Exception as exc:
-        error = str(exc)
+        error = _fmt_exc(exc)
     return templates.TemplateResponse(
         "index.html",
         {"request": request, "query": query, "limit": limit, "results": results, "error": error},
@@ -266,7 +289,7 @@ async def ingest_form(
             ids = [r["id"] for r in new_records]
             message = f"成功写入 {len(new_records)} 条，自动分配 ID：{ids}"
     except Exception as exc:
-        error = str(exc)
+        error = _fmt_exc(exc)
     return templates.TemplateResponse(
         "ingest.html",
         {"request": request, "texts": texts if error else "", "message": message, "error": error},

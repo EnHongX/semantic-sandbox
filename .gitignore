@@ -43,3 +43,6 @@ models/
 # ---- 日志 ----
 *.log
 logs/
+
+# ---- 用户通过 Web UI 写入的数据（本地备份，不进仓库）----
+data/user_data.json

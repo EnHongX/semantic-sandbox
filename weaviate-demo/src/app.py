@@ -53,6 +53,16 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 # ─── 工具函数 ──────────────────────────────────────────────────────────────────
 
+_CONN_KEYWORDS = ("connection refused", "connect call failed", "timed out", "failed to connect", "errno 111", "unreachable")
+
+
+def _fmt_exc(exc: Exception) -> str:
+    msg = str(exc)
+    if any(k in msg.lower() for k in _CONN_KEYWORDS):
+        return "向量数据库未连接，请先在 weaviate-demo/ 目录执行 docker compose up -d 启动服务"
+    return msg
+
+
 def _connect() -> weaviate.WeaviateClient:
     return weaviate.connect_to_local(
         host=WEAVIATE_HOST,
@@ -162,6 +172,24 @@ class SearchResult(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     results: list[SearchResult]
+
+
+# ─── 健康检查 ─────────────────────────────────────────────────────────────────
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    client = _connect()
+    try:
+        ready = client.is_ready()
+        if not ready:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=503, detail="Weaviate 未就绪，请稍后重试")
+        return {"status": "ok", "db": "weaviate"}
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail=_fmt_exc(exc))
+    finally:
+        client.close()
 
 
 # ─── REST API ──────────────────────────────────────────────────────────────────
@@ -284,7 +312,7 @@ async def search_form(
             props = obj.properties or {}
             results.append({"id": int(props.get("doc_id", 0)), "text": props.get("text", ""), "score": score})
     except Exception as exc:
-        error = str(exc)
+        error = _fmt_exc(exc)
     finally:
         client.close()
     return templates.TemplateResponse(
@@ -320,7 +348,7 @@ async def ingest_form(
             ids = [r["id"] for r in new_records]
             message = f"成功写入 {len(new_records)} 条，自动分配 ID：{ids}"
     except Exception as exc:
-        error = str(exc)
+        error = _fmt_exc(exc)
     finally:
         client.close()
     return templates.TemplateResponse(

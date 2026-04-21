@@ -328,7 +328,13 @@ echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.zshrc  # 永久生效
 
 ### 安装 Docker
 
-**macOS / Windows — 推荐 Docker Desktop**
+> **Docker Desktop vs Docker Engine**
+> - **Docker Desktop**：带图形界面，只用于 macOS 和 Windows 本地开发机，**不能安装在无 GUI 的 Linux 服务器上**。
+> - **Docker Engine**：纯命令行，Linux 服务器上安装的就是这个，**不需要任何图形界面**。Compose v2 是 Docker Engine 的一个 CLI 插件，同样纯命令行，与 GUI 无关。
+
+---
+
+**macOS / Windows 本地开发机 — 安装 Docker Desktop**
 
 前往 [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/) 下载安装：
 
@@ -338,41 +344,46 @@ echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.zshrc  # 永久生效
 | macOS (Intel) | 同上，选 Intel 版本 |
 | Windows 10/11 | 下载 `.exe`，按向导安装（需要 WSL 2，安装器会自动提示） |
 
-安装后启动 Docker Desktop，等待图标变为**绿色（Running）**状态。
+安装后启动 Docker Desktop，等待菜单栏图标变为**绿色（Running）**状态，之后在终端使用 `docker` / `docker compose` 命令。
 
-**Linux (Ubuntu / Debian)**
+---
 
-推荐使用 Docker 官方一键安装脚本，会同时安装 Docker Engine 和 Compose v2 插件：
+**Linux 服务器（无 GUI 纯命令行）— 安装 Docker Engine + Compose 插件**
+
+无需图形界面。推荐官方一键脚本，会同时安装 Docker Engine 和 Compose v2 插件：
 
 ```bash
+# Ubuntu / Debian
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
 ```
 
-安装完成后验证 Compose v2 是否已包含：
+验证：
 
 ```bash
-docker compose version   # 正常输出 Docker Compose version v2.x.x
+docker compose version   # 输出 Docker Compose version v2.x.x 即为成功
 ```
 
-如果上面命令报错（部分最小化安装或旧版 Ubuntu 可能缺少插件），按以下方式补装：
+如果 `docker compose version` 报错（部分最小化镜像可能未包含插件），补装方式：
 
 ```bash
-# 方式一：apt 补装插件（需要 Docker 官方源，运行过上面脚本的已自动添加）
+# 方式一：apt 补装（官方脚本已自动添加 Docker 源）
 sudo apt-get install -y docker-compose-plugin
 
-# 方式二：手动下载独立二进制（任何 Linux 均适用）
-COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+# 方式二：手动下载独立二进制（适用于任何 Linux，包括无法访问 apt 的环境）
+COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest \
+  | grep '"tag_name"' | cut -d'"' -f4)
 sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+sudo curl -SL \
+  "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-docker compose version   # 验证
+docker compose version
 ```
 
-> 国内下载 GitHub Release 可能超时，可先把二进制传到服务器再移动到目标路径。
+> 国内服务器下载 GitHub Release 可能超时，可在本地下好再 `scp` 传到服务器，放到 `/usr/local/lib/docker/cli-plugins/docker-compose` 后 `chmod +x` 即可。
 
-**Linux (CentOS / RHEL)**
+**CentOS / RHEL 服务器**
 
 ```bash
 sudo yum install -y yum-utils
@@ -382,7 +393,7 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
 ```
 
-验证：
+统一验证（macOS / Linux 均适用）：
 
 ```bash
 docker --version && docker compose version

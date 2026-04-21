@@ -157,6 +157,123 @@ python -m src.ingest
 
 ---
 
+## 框架配置参数详解
+
+### 连接客户端
+
+```python
+from qdrant_client import QdrantClient
+
+client = QdrantClient(
+    host="localhost",   # Qdrant 服务地址
+    port=6333,          # REST/HTTP 端口（默认 6333）
+    # grpc_port=6334,   # 可选：gRPC 端口，大批量写入时吞吐更高
+    # api_key="xxx",    # 生产环境开启鉴权后需要传入
+    # timeout=10,       # 请求超时秒数，默认无限制
+    # https=True,       # 生产环境用 TLS 时开启
+)
+```
+
+### 创建集合（`create_collection`）
+
+```python
+from qdrant_client.http import models as qm
+
+client.create_collection(
+    collection_name="my_collection",
+    vectors_config=qm.VectorParams(
+        size=384,               # 向量维度，必须与嵌入模型一致
+        distance=qm.Distance.COSINE,  # 距离度量，见下表
+        # on_disk=True,         # 将向量存磁盘而非内存，适合超大数据集
+    ),
+    # hnsw_config=qm.HnswConfigDiff(  # HNSW 索引调优（一般不需要动）
+    #     m=16,                 # 每个节点的最大连接数，越大精度越高但内存更多
+    #     ef_construct=100,     # 构建时的搜索宽度，越大精度越高但建索引慢
+    # ),
+    # optimizers_config=qm.OptimizersConfigDiff(
+    #     indexing_threshold=20000,  # 超过多少条开始建 HNSW 索引，默认 20000
+    # ),
+)
+```
+
+**距离度量对比**：
+
+| 枚举值 | 适用场景 |
+|---|---|
+| `Distance.COSINE` | 文本语义检索（最常用）；向量归一化后等价于内积，推荐 |
+| `Distance.DOT` | 向量未归一化时用内积，适合 OpenAI 等不做归一化的模型 |
+| `Distance.EUCLID` | 欧氏距离，图像特征向量常用 |
+| `Distance.MANHATTAN` | 曼哈顿距离，较少使用 |
+
+### 写入数据（`upsert`）
+
+```python
+client.upsert(
+    collection_name="my_collection",
+    points=[
+        qm.PointStruct(
+            id=1,                           # 整数或 UUID 字符串，必须唯一
+            vector=[0.1, 0.2, ...],         # 长度必须等于 size
+            payload={"text": "原始文本",    # 任意 JSON 字段，用于过滤和返回
+                     "category": "tech"},
+        )
+    ],
+    wait=True,   # True = 写入完成后才返回（同步），False = 异步写入更快但要自己保证顺序
+)
+```
+
+### 检索（`search`）
+
+```python
+hits = client.search(
+    collection_name="my_collection",
+    query_vector=[0.1, 0.2, ...],   # 查询向量
+    limit=5,                         # 返回 top-k 条
+    with_payload=True,               # 是否返回 payload 字段（默认 True）
+    # score_threshold=0.5,           # 只返回相似度 ≥ 阈值的结果
+    # query_filter=qm.Filter(        # 结构化过滤（先过滤再搜索）
+    #     must=[
+    #         qm.FieldCondition(
+    #             key="category",
+    #             match=qm.MatchValue(value="tech"),
+    #         )
+    #     ]
+    # ),
+)
+```
+
+---
+
+## 使用注意事项
+
+**1. 维度必须与模型一致**
+集合创建后维度不能改。换模型（如从 384 维换到 512 维）必须先删集合再重建：
+```bash
+curl -X DELETE http://localhost:6333/collections/sandbox_docs
+python -m src.ingest
+```
+
+**2. ID 类型一旦确定不能混用**
+Qdrant 支持整数和 UUID 两种 ID，但同一个集合里只能用一种。本项目用整数，不要混入 UUID。
+
+**3. `wait=True` vs `wait=False`**
+默认 `wait=True`（同步），upsert 返回后数据立即可搜索。`wait=False` 吞吐更高，但数据不一定立即可见，适合批量预加载场景。
+
+**4. Payload 过滤需要先建索引**
+直接用 `query_filter` 可以过滤，但字段没有索引时会做全扫描。大数据量下先建 payload 索引：
+```python
+client.create_payload_index(
+    collection_name="sandbox_docs",
+    field_name="category",
+    field_schema=qm.PayloadSchemaType.KEYWORD,
+)
+```
+
+**5. 数据持久化**
+默认数据存在 Docker volume（`./qdrant_data/`）。容器删了数据还在；`docker compose down -v` 才会连 volume 一起删。
+
+---
+
 ## Web UI 与 API
 
 除了命令行脚本，本子项目还提供一个基于 **FastAPI** 的 Web 界面和 REST API。

@@ -196,6 +196,133 @@ python -m src.ingest
 
 ---
 
+## 框架配置参数详解
+
+### 连接客户端
+
+```python
+from pymilvus import MilvusClient
+
+client = MilvusClient(
+    uri="http://localhost:19530",  # Milvus gRPC/HTTP 地址；standalone 默认 19530
+    # token="user:password",       # 开启认证后传入，格式 "user:password"
+    # timeout=10,                  # 请求超时秒数
+)
+```
+
+> Milvus 也支持本地 lite 模式：`MilvusClient("./local.db")`，不需要 Docker，适合极小数据量的快速验证。
+
+### 定义 Schema 并创建集合
+
+```python
+from pymilvus import DataType
+
+schema = client.create_schema(
+    auto_id=False,              # False = 自己管 ID，True = Milvus 自动生成
+    enable_dynamic_field=True,  # True = schema 之外的字段存进 $meta（类似 JSON 列）
+)
+schema.add_field(field_name="id",     datatype=DataType.INT64,        is_primary=True)
+schema.add_field(field_name="vector", datatype=DataType.FLOAT_VECTOR, dim=384)  # dim 必须与模型一致
+schema.add_field(field_name="text",   datatype=DataType.VARCHAR,      max_length=2048)
+
+index_params = client.prepare_index_params()
+index_params.add_index(
+    field_name="vector",
+    index_type="AUTOINDEX",     # 自动选择索引，学习场景够用；生产见下方说明
+    metric_type="COSINE",       # 距离度量，见下表
+    # params={"nlist": 128},    # 手动指定索引时才需要，AUTOINDEX 不用
+)
+
+client.create_collection(
+    collection_name="my_col",
+    schema=schema,
+    index_params=index_params,
+)
+```
+
+**距离度量对比**：
+
+| `metric_type` | 说明 |
+|---|---|
+| `"COSINE"` | 余弦相似度，文本检索最常用；**注意：Milvus 返回的 distance 字段实际是相似度值** |
+| `"IP"` | 内积（Inner Product）；向量已归一化时与 COSINE 等价，速度略快 |
+| `"L2"` | 欧氏距离；图像特征向量常用，值越小越相似（与上面两者相反） |
+
+**索引类型说明**（生产场景参考）：
+
+| `index_type` | 适用场景 |
+|---|---|
+| `AUTOINDEX` | 学习 / 云托管；Milvus 自行决定，开源版默认 HNSW |
+| `HNSW` | 通用首选，内存索引，高精度高速度 |
+| `IVF_FLAT` | 数据量中等（百万级），精度高但内存占用大 |
+| `IVF_PQ` | 数据量大（千万级+），用量化压缩内存，有一定精度损失 |
+| `DISKANN` | 数据量超大，索引存磁盘，内存占用极低 |
+
+### 写入数据（`upsert`）
+
+```python
+client.upsert(
+    collection_name="my_col",
+    data=[
+        {"id": 1, "vector": [0.1, 0.2, ...], "text": "文本内容"},
+        {"id": 2, "vector": [0.3, 0.4, ...], "text": "另一条"},
+    ],
+)
+# 写入后必须 flush，否则数据还在内存缓冲区，search 可能搜不到
+client.flush(collection_name="my_col")
+```
+
+### 加载集合与检索
+
+```python
+# Milvus 独有：搜索前必须先把集合加载进内存
+client.load_collection(collection_name="my_col")
+
+results = client.search(
+    collection_name="my_col",
+    data=[[0.1, 0.2, ...]],             # 外层 list = 批量查询；单次查询也要包一层
+    limit=5,                             # top-k
+    output_fields=["text"],              # 指定要返回的字段（向量字段默认不返回）
+    search_params={"metric_type": "COSINE"},
+    # filter='text like "Python%"',      # 标量过滤（先过滤再搜索）
+    # anns_field="vector",               # 多向量字段时指定用哪个
+)
+
+hits = results[0]   # results 是二维列表，外层对应每个查询
+for hit in hits:
+    print(hit["id"], hit["entity"]["text"], hit["distance"])
+```
+
+---
+
+## 使用注意事项
+
+**1. 搜索前必须 `load_collection`**
+这是 Milvus 最容易踩的坑。集合数据存在磁盘（MinIO），搜索前需要加载进内存，否则报 `collection not loaded`。本项目的 `search.py` 启动时已自动调用。
+
+**2. `upsert` 后要 `flush`**
+`upsert` 先写入内存 buffer，`flush` 才落盘。不 flush 的话：
+- 数据可能搜不到（还在 buffer 里）
+- 容器重启后数据丢失
+
+**3. COSINE 指标下 `distance` 实际是相似度**
+Milvus 的命名有些反直觉：用 COSINE 时，`hit["distance"]` 返回的值越大越相似（范围 -1 ~ 1），和"距离"的直觉相反。换 L2 时 `distance` 才是真正的距离（值越小越相似）。
+
+**4. 维度改变需删集合重建**
+Schema 创建后不可修改（包括向量维度）。换嵌入模型后：
+```python
+client.drop_collection("sandbox_docs")
+# 然后重跑 python -m src.ingest
+```
+
+**5. 三个容器缺一不可**
+Milvus standalone 需要 etcd（元数据）+ minio（存储）+ milvus（主进程）同时健康。`docker compose ps` 任何一个 Exiting 都会导致 Milvus 功能异常。
+
+**6. `auto_id=True` 时不能手动指定 ID**
+一旦 schema 设置了 `auto_id=True`，写入数据时不能包含主键字段，否则报错。本项目用 `auto_id=False` 来保持对 ID 的控制。
+
+---
+
 ## Web UI 与 API
 
 ### 启动

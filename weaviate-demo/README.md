@@ -142,6 +142,132 @@ python -m src.ingest /path/to/your_data.json
 
 ---
 
+## 框架配置参数详解
+
+### 连接客户端
+
+```python
+import weaviate
+
+# 本地连接（推荐写法，v4 简化了连接 API）
+client = weaviate.connect_to_local(
+    host="localhost",       # Weaviate HTTP 地址
+    port=8080,              # HTTP 端口
+    grpc_port=50051,        # gRPC 端口（v4 客户端内部用 gRPC 传输数据）
+    # auth_credentials=weaviate.auth.AuthApiKey("YOUR_KEY"),  # 开启鉴权后传入
+)
+
+# 用完必须关闭，否则连接不释放
+try:
+    ...
+finally:
+    client.close()
+
+# 或者用 with 语句（推荐）
+with weaviate.connect_to_local(...) as client:
+    ...
+```
+
+### 创建集合（`collections.create`）
+
+```python
+from weaviate.classes.config import Configure, DataType, Property, VectorDistances
+
+client.collections.create(
+    name="MyCollection",       # 集合名必须以大写字母开头（Weaviate 强制要求）
+    properties=[
+        Property(name="doc_id", data_type=DataType.INT),
+        Property(name="text",   data_type=DataType.TEXT),
+        # 其他字段类型：DataType.BOOL / NUMBER / DATE / UUID 等
+    ],
+    vectorizer_config=Configure.Vectorizer.none(),   # 自己提供向量；也可用内置向量化模块
+    vector_index_config=Configure.VectorIndex.hnsw(
+        distance_metric=VectorDistances.COSINE,      # 距离度量
+        # ef_construction=128,  # 构建时搜索宽度，越大精度越高、建索引越慢
+        # max_connections=64,   # 每个节点最大连接数，越大精度越高、内存越多
+        # ef=64,                # 查询时搜索宽度，可在运行时动态调整
+    ),
+    # 也可以换成 flat 索引（暴力扫描，适合数据量极小的场景）：
+    # vector_index_config=Configure.VectorIndex.flat(distance_metric=VectorDistances.COSINE),
+)
+```
+
+**距离度量对比**：
+
+| 枚举值 | 说明 |
+|---|---|
+| `VectorDistances.COSINE` | 余弦距离（= 1 − 余弦相似度）；文本检索最常用 |
+| `VectorDistances.DOT` | 内积（负数，越小越相似）；向量未归一化时用 |
+| `VectorDistances.L2` | 欧氏距离平方；图像特征常用 |
+| `VectorDistances.HAMMING` | 汉明距离；二进制向量用 |
+
+### 写入数据（`insert_many`）
+
+```python
+from weaviate.classes.data import DataObject
+from weaviate.util import generate_uuid5
+
+collection = client.collections.get("MyCollection")
+result = collection.data.insert_many([
+    DataObject(
+        properties={"doc_id": 1, "text": "文本内容"},
+        uuid=generate_uuid5("1"),   # 用固定输入生成稳定 UUID，保证幂等
+        vector=[0.1, 0.2, ...],     # 向量列表，长度须与建集合时一致
+    )
+])
+if result.has_errors:
+    for idx, err in result.errors.items():
+        print(f"第 {idx} 条失败: {err.message}")
+```
+
+### 检索（`near_vector`）
+
+```python
+from weaviate.classes.query import MetadataQuery
+
+collection = client.collections.get("MyCollection")
+res = collection.query.near_vector(
+    near_vector=[0.1, 0.2, ...],        # 查询向量
+    limit=5,                             # 返回 top-k
+    return_metadata=MetadataQuery(
+        distance=True,                   # 返回距离值
+        # score=True,                    # 也可要求返回 score（BM25/hybrid 搜索时用）
+    ),
+    # filters=Filter.by_property("doc_id").greater_than(5),  # 结构化过滤
+    # distance=0.5,                      # 只返回距离 ≤ 阈值的结果
+)
+
+for obj in res.objects:
+    similarity = 1 - obj.metadata.distance   # distance 是 cosine 距离，转成相似度
+    print(similarity, obj.properties["text"])
+```
+
+---
+
+## 使用注意事项
+
+**1. 集合名必须以大写字母开头**
+Weaviate 强制要求集合名（class name）首字母大写，如 `SandboxDocs`。小写会报错。
+
+**2. `client.close()` 不能省**
+Weaviate v4 客户端内部维护 HTTP + gRPC 双连接。不关闭会导致连接泄漏，长时间运行后报 `Too many open files`。用 `with` 语句是最安全的写法。
+
+**3. ingest.py 会重建集合（会清空数据）**
+本项目的命令行 `ingest.py` 每次都先删除再重建集合，保证幂等。但 **Web UI 的写入是增量的**（不删除），两者行为不同，注意区分。
+
+**4. score vs distance**
+Weaviate 的 `near_vector` 返回的是**距离**（`distance`），不是相似度：
+- COSINE 距离 = 1 − 余弦相似度，范围 0 ~ 2（0 表示完全一样）
+- 代码里用 `similarity = 1 - distance` 换算成更直观的相似度
+
+**5. v4 与 v3 API 完全不兼容**
+网上很多教程是 v3（`client.query.get(...)`、`client.schema.create(...)`)。v4 的命名空间完全改了，看到 v3 写法一律不要参考。
+
+**6. UUID 主键与幂等**
+Weaviate 用 UUID 作对象主键。用 `generate_uuid5(str(doc_id))` 可以从固定输入生成稳定 UUID，同一 `doc_id` 多次写入不会产生重复记录（后者覆盖前者）。
+
+---
+
 ## Web UI 与 API
 
 ### 启动

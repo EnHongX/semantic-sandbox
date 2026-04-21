@@ -78,7 +78,8 @@ def _ensure_collection(client: weaviate.WeaviateClient) -> None:
     )
 
 
-def _upsert_records(client: weaviate.WeaviateClient, records: list[dict]) -> None:
+def _upsert_records(client: weaviate.WeaviateClient, records: list[dict]) -> int:
+    """返回实际写入成功的条数。"""
     texts = [r["text"] for r in records]
     vectors = embed(texts)
     collection = client.collections.get(COLLECTION_NAME)
@@ -90,7 +91,11 @@ def _upsert_records(client: weaviate.WeaviateClient, records: list[dict]) -> Non
         )
         for r, vec in zip(records, vectors)
     ]
-    collection.data.insert_many(objects)
+    result = collection.data.insert_many(objects)
+    if result.has_errors:
+        msgs = "; ".join(e.message for e in result.errors.values())
+        raise RuntimeError(f"部分数据写入失败：{msgs}")
+    return len(objects)
 
 
 def _load_user_data() -> list[dict]:

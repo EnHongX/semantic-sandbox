@@ -49,8 +49,9 @@ def recreate_collection(client: weaviate.WeaviateClient) -> None:
     client.collections.create(
         name=COLLECTION_NAME,
         properties=[
-            Property(name="doc_id", data_type=DataType.INT),
-            Property(name="text", data_type=DataType.TEXT),
+            Property(name="doc_id",   data_type=DataType.INT),
+            Property(name="text",     data_type=DataType.TEXT),
+            Property(name="category", data_type=DataType.TEXT),
         ],
         # 我们自己提供向量，关掉内置向量化
         vectorizer_config=Configure.Vectorizer.none(),
@@ -66,7 +67,7 @@ def insert_all(client: weaviate.WeaviateClient, records: list[dict]) -> None:
 
     objects = [
         DataObject(
-            properties={"doc_id": r["id"], "text": r["text"]},
+            properties={"doc_id": r["id"], "text": r["text"], "category": r.get("category", "")},
             # 用 doc_id 生成稳定 UUID，方便幂等更新
             uuid=generate_uuid5(str(r["id"])),
             vector=vec,

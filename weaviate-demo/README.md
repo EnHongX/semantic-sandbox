@@ -112,6 +112,31 @@ python -m src.search
 
 ---
 
+## 带过滤条件的检索
+
+```bash
+python -m src.filter_search                              # 交互模式
+python -m src.filter_search "neural network" technology
+python -m src.filter_search "ocean current" geography
+```
+
+**过滤语法**（Weaviate v4 Filter）：
+
+```python
+from weaviate.classes.query import Filter
+
+# 单条件
+filters=Filter.by_property("category").equal("technology")
+
+# AND / OR
+filters=Filter.by_property("category").equal("technology") \
+    & Filter.by_property("doc_id").greater_than(100)
+```
+
+> Weaviate 的过滤是 pre-filter，先按属性筛选再做向量近邻搜索。注意：`ingest.py` 每次会重建集合，如需保留旧数据请改用 Web UI 写入。
+
+---
+
 ## 换数据 / 换模型
 
 ### 换数据

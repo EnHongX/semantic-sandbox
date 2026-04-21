@@ -68,8 +68,9 @@ def _ensure_collection(client: weaviate.WeaviateClient) -> None:
     client.collections.create(
         name=COLLECTION_NAME,
         properties=[
-            Property(name="doc_id", data_type=DataType.INT),
-            Property(name="text", data_type=DataType.TEXT),
+            Property(name="doc_id",   data_type=DataType.INT),
+            Property(name="text",     data_type=DataType.TEXT),
+            Property(name="category", data_type=DataType.TEXT),
         ],
         vectorizer_config=Configure.Vectorizer.none(),
         vector_index_config=Configure.VectorIndex.hnsw(
@@ -85,7 +86,7 @@ def _upsert_records(client: weaviate.WeaviateClient, records: list[dict]) -> int
     collection = client.collections.get(COLLECTION_NAME)
     objects = [
         DataObject(
-            properties={"doc_id": r["id"], "text": r["text"]},
+            properties={"doc_id": r["id"], "text": r["text"], "category": r.get("category", "")},
             uuid=generate_uuid5(str(r["id"])),
             vector=vec,
         )

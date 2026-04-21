@@ -114,6 +114,30 @@ python -m src.search "what is a vector database"
 
 ---
 
+## 带过滤条件的检索
+
+纯向量检索找"语义最近"，过滤检索在此基础上限定只在某个分类里搜索。
+
+```bash
+python -m src.filter_search                              # 交互模式
+python -m src.filter_search "neural network" technology  # 文本 + 分类
+python -m src.filter_search "ocean current" geography
+```
+
+**过滤语法**（Qdrant payload filter）：
+
+```python
+qm.Filter(
+    must=[
+        qm.FieldCondition(key="category", match=qm.MatchValue(value="technology")),
+    ]
+)
+```
+
+> 过滤发生在向量检索之前（pre-filter）：Qdrant 先找出满足条件的点，再在这个子集里做近邻搜索。数据需要包含 `category` 字段，用 `sample_large_en.json` 入库效果最好（100 条，8 个分类）。
+
+---
+
 ## 换数据 / 换模型
 
 ### 换数据

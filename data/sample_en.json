@@ -1,12 +1,12 @@
 [
-  {"id": 1, "text": "The Eiffel Tower is a wrought-iron lattice tower located in Paris, France."},
-  {"id": 2, "text": "Python is a high-level programming language known for its readability."},
-  {"id": 3, "text": "The Great Wall of China stretches for thousands of miles across northern China."},
-  {"id": 4, "text": "Machine learning is a subfield of artificial intelligence focused on data-driven models."},
-  {"id": 5, "text": "Vector databases store embeddings and support approximate nearest neighbor search."},
-  {"id": 6, "text": "Coffee is brewed from roasted coffee beans, typically served hot."},
-  {"id": 7, "text": "The Pacific Ocean is the largest and deepest of the world's five oceans."},
-  {"id": 8, "text": "Docker lets you package applications into portable containers."},
-  {"id": 9, "text": "React is a JavaScript library for building user interfaces."},
-  {"id": 10, "text": "A sentence embedding maps a piece of text into a fixed-dimensional vector."}
+  {"id": 1,  "text": "The Eiffel Tower is a wrought-iron lattice tower located in Paris, France.", "category": "geography"},
+  {"id": 2,  "text": "Python is a high-level programming language known for its readability.", "category": "technology"},
+  {"id": 3,  "text": "The Great Wall of China stretches for thousands of miles across northern China.", "category": "geography"},
+  {"id": 4,  "text": "Machine learning is a subfield of artificial intelligence focused on data-driven models.", "category": "technology"},
+  {"id": 5,  "text": "Vector databases store embeddings and support approximate nearest neighbor search.", "category": "technology"},
+  {"id": 6,  "text": "Coffee is brewed from roasted coffee beans, typically served hot.", "category": "food"},
+  {"id": 7,  "text": "The Pacific Ocean is the largest and deepest of the world's five oceans.", "category": "geography"},
+  {"id": 8,  "text": "Docker lets you package applications into portable containers.", "category": "technology"},
+  {"id": 9,  "text": "React is a JavaScript library for building user interfaces.", "category": "technology"},
+  {"id": 10, "text": "A sentence embedding maps a piece of text into a fixed-dimensional vector.", "category": "technology"}
 ]

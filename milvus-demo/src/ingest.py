@@ -73,7 +73,13 @@ def upsert(client: MilvusClient, records: list[dict]) -> None:
     texts = [r["text"] for r in records]
     vectors = embed(texts)
     rows = [
-        {"id": int(r["id"]), "vector": vec, "text": r["text"]}
+        {
+            "id": int(r["id"]),
+            "vector": vec,
+            "text": r["text"],
+            # 透传其他字段（如 category），存入 dynamic field（$meta）
+            **{k: v for k, v in r.items() if k not in {"id", "text"}},
+        }
         for r, vec in zip(records, vectors)
     ]
     # upsert = 存在就覆盖，不存在就插入。重跑脚本不会产生重复数据。

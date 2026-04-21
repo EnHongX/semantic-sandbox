@@ -156,6 +156,26 @@ python -m src.search
 
 ---
 
+## 带过滤条件的检索
+
+```bash
+python -m src.filter_search                              # 交互模式
+python -m src.filter_search "neural network" technology
+python -m src.filter_search "ocean current" geography
+```
+
+**过滤语法**（Milvus 标量表达式）：
+
+```python
+filter='category == "technology"'
+filter='category in ["technology", "science"]'
+filter='category == "technology" and doc_id > 100'
+```
+
+> `category` 存在 dynamic field（`$meta`）中，无需修改 schema。过滤与向量检索同时进行（filtered ANN），结果天然满足过滤条件。
+
+---
+
 ## 换数据 / 换模型
 
 ### 换数据

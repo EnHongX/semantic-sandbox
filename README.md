@@ -132,11 +132,15 @@ uvicorn src.app:app --reload --port 8888
 ```
 semantic-sandbox/
 ├── README.md                 ← 你正在读的这个
+├── COMPARE.md                ← 三库 API 横向对比（建集合/写入/检索/过滤，三列并排）
 ├── .env.example              ← 公共配置模板（嵌入模型）
 ├── .gitignore
-├── data/                     ← 示例数据（中英文各一份）
-│   ├── sample_en.json
-│   └── sample_zh.json
+├── data/
+│   ├── sample_en.json        ← 10 条英文示例数据（含 category 字段）
+│   ├── sample_zh.json        ← 中文示例数据
+│   └── sample_large_en.json  ← 100 条英文数据，8 个分类（geography/technology/
+│                                science/history/food/sports/art/nature），
+│                                适合演示过滤检索和向量检索效果
 ├── scripts/
 │   └── preload_model.py      ← 预下载嵌入模型
 ├── milvus-demo/              ← Milvus 子项目（独立可运行）

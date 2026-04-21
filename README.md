@@ -2,8 +2,6 @@
 
 一个用来**动手学习向量数据库**的练习项目：同一份数据，分别用 **Milvus / Weaviate / Qdrant** 三套主流向量库各自实现一次"入库 + 语义检索"的完整流程。
 
-目标读者：**有约一年 Python 经验、第一次接触向量数据库**的开发者。
-
 ---
 
 ## 目录
@@ -344,11 +342,35 @@ echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.zshrc  # 永久生效
 
 **Linux (Ubuntu / Debian)**
 
+推荐使用 Docker 官方一键安装脚本，会同时安装 Docker Engine 和 Compose v2 插件：
+
 ```bash
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
-sudo apt-get install -y docker-compose-plugin
 ```
+
+安装完成后验证 Compose v2 是否已包含：
+
+```bash
+docker compose version   # 正常输出 Docker Compose version v2.x.x
+```
+
+如果上面命令报错（部分最小化安装或旧版 Ubuntu 可能缺少插件），按以下方式补装：
+
+```bash
+# 方式一：apt 补装插件（需要 Docker 官方源，运行过上面脚本的已自动添加）
+sudo apt-get install -y docker-compose-plugin
+
+# 方式二：手动下载独立二进制（任何 Linux 均适用）
+COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+docker compose version   # 验证
+```
+
+> 国内下载 GitHub Release 可能超时，可先把二进制传到服务器再移动到目标路径。
 
 **Linux (CentOS / RHEL)**
 

@@ -27,30 +27,73 @@ milvus-demo/
 
 ### 0. 先确认 Docker 内存给够
 
-⚠️ **Docker Desktop 默认分配的内存通常 ≤ 2GB，Milvus 起不来。**
+⚠️ **Docker Desktop 默认分配的内存通常 ≤ 2GB，Milvus 起不来。必须先调大，再做后面的步骤。**
 
-打开 Docker Desktop → Settings → Resources → Memory，调到 **至少 4GB**，再继续。
+**macOS / Windows (Docker Desktop)**：
+
+1. 打开 Docker Desktop → 右上角 ⚙️ Settings
+2. 左侧点 **Resources → Advanced**
+3. **Memory** 滑块拖到 **≥ 4 GB**（推荐 6 GB）
+4. 点右下角 **Apply & Restart**，等 Docker Desktop 重启完成（约 30 秒）
+
+**Linux**：
+
+```bash
+# 查看当前可用内存，确保至少有 4GB free
+free -h
+```
+
+如果可用内存不足，先停掉其他占内存的进程，或换一台内存更大的机器。
+
+---
+
+> **为什么 Milvus 需要这么多内存？**
+> Milvus standalone 实际上跑了三个独立进程：
+> - **etcd**：分布式键值存储，保存 Milvus 的元数据（集合定义、schema 等）
+> - **minio**：对象存储，持久化存放向量数据文件
+> - **milvus**：主进程，负责索引构建、向量检索
+>
+> 三个进程加起来，冷启动就要占 ~2-3 GB 内存。容器内存不足时会被 Linux OOM Killer 杀掉，表现为容器不停重启（Exit Code 137）。
 
 ### 1. 启动 Milvus
 
 ```bash
 cd milvus-demo
 docker compose up -d
-
-# 启动要 30~60 秒，等它变 healthy
-docker compose ps
 ```
 
-`STATUS` 列都变成 `healthy` 或 `running` 再继续。如果 milvus 容器一直 restarting，`docker compose logs milvus` 看日志，90% 是内存不足。
+启动需要 **30~60 秒**（要等 etcd 和 minio 就绪后 milvus 才会健康）。用以下命令观察状态：
 
-验证：
+```bash
+# 查看各容器状态（等所有容器都变为 healthy 或 running）
+docker compose ps
+
+# 实时查看 milvus 主容器的启动日志
+docker compose logs -f milvus
+```
+
+`STATUS` 列全部变为 `healthy` 或 `running` 后再继续。典型的就绪输出：
+
+```
+NAME                        IMAGE                    STATUS
+sandbox-milvus-etcd         quay.io/coreos/etcd      healthy
+sandbox-milvus-minio        minio/minio              healthy
+sandbox-milvus-standalone   milvusdb/milvus          healthy
+sandbox-milvus-attu         zilliz/attu              running
+```
+
+如果 milvus 容器一直 `Restarting`：
+1. 先看 `docker compose logs milvus`，90% 是内存不足（OOM）
+2. 回到第 0 步，把 Docker Desktop 内存调到 ≥ 4 GB
+
+验证 Milvus 已就绪：
 ```bash
 curl http://localhost:9091/healthz    # 返回 "OK"
 ```
 
 **附带的可视化 UI**：
-- Attu（Milvus 官方管理界面）：<http://localhost:8000>
-- MinIO 控制台：<http://localhost:9001> 账号密码都是 `minioadmin`（只是看对象存储，一般用不上）
+- **Attu**（Milvus 官方管理界面）：<http://localhost:8000> — 可以直接在浏览器里看集合、查数据、做搜索
+- **MinIO 控制台**：<http://localhost:9001>，账号密码均为 `minioadmin`（看底层对象存储用，一般不需要）
 
 ### 2. 装 Python 依赖
 
@@ -150,6 +193,103 @@ python -m src.ingest
 | `client.flush(...)` | 强制把数据从内存刷到持久化存储（否则搜索可能漏新数据） |
 | `client.load_collection(...)` | **搜索前必须加载**，把集合加载进内存，这是 Milvus 比较特别的一点 |
 | `client.search(...)` | 检索，返回 `List[List[Hit]]`，多查询批量时外层就是每个查询 |
+
+---
+
+## Web UI 与 API
+
+### 启动
+
+```bash
+uvicorn src.app:app --reload --port 8890
+```
+
+| 地址 | 用途 |
+|---|---|
+| <http://localhost:8890> | 搜索页面 |
+| <http://localhost:8890/ingest> | 写入页面 |
+| <http://localhost:8890/docs> | Swagger API 文档 |
+
+---
+
+### REST API 说明
+
+#### POST `/api/ingest` — 写入文本
+
+**请求体（JSON）**：
+
+```json
+{
+  "texts": ["第一条文本", "第二条文本"]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `texts` | `string[]` | 是 | 要写入的文本列表，ID 自动递增 |
+
+**响应体**：
+
+```json
+{"inserted": 2, "ids": [11, 12]}
+```
+
+**curl 示例**：
+
+```bash
+curl -X POST http://localhost:8890/api/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"texts": ["巴黎是法国的首都", "向量数据库用于语义检索"]}'
+```
+
+---
+
+#### POST `/api/search` — 语义搜索
+
+**请求体（JSON）**：
+
+```json
+{
+  "query": "法国著名地标",
+  "limit": 5
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `query` | `string` | 是 | — | 查询文本 |
+| `limit` | `int` | 否 | `5` | 返回条数，最大 20 |
+
+**响应体**：
+
+```json
+{
+  "query": "法国著名地标",
+  "results": [
+    {"id": 1, "text": "The Eiffel Tower is ...", "score": 0.7432}
+  ]
+}
+```
+
+`score` 为 COSINE 相似度（-1 ~ 1，越接近 1 越相似）。
+
+> Milvus 小坑：`COSINE` 指标下 `search` 返回的 `distance` 字段实际是**相似度**（不是距离），直接用即可。
+
+**curl 示例**：
+
+```bash
+curl -X POST http://localhost:8890/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "法国著名地标", "limit": 3}'
+```
+
+---
+
+### 数据存储说明
+
+写入数据双重保存：
+1. **Milvus**（向量库）：使用 `upsert`，相同 id 会覆盖，不产生重复
+2. **`data/user_data.json`**：本地备份，Milvus 数据清空后可用 `python -m src.ingest ../data/user_data.json` 重建
 
 ---
 

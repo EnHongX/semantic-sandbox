@@ -28,11 +28,23 @@ weaviate-demo/
 ```bash
 cd weaviate-demo
 docker compose up -d
-
-# 验证
-curl http://localhost:8080/v1/.well-known/ready
-# 返回空 200 就 OK
 ```
+
+Weaviate 启动约 **5~10 秒**就绪。验证：
+
+```bash
+# 查看容器状态（应为 Up 或 running）
+docker compose ps
+
+# 健康检查接口，返回 HTTP 200（空 body）说明就绪
+curl -o /dev/null -s -w "%{http_code}\n" http://localhost:8080/v1/.well-known/ready
+# 输出 200 即可
+
+# 如果容器没起来，查日志
+docker compose logs weaviate
+```
+
+> Weaviate 还同时监听 **gRPC 端口 50051**，`weaviate-client` v4 会用到它。`docker-compose.yml` 里已经映射好了，不需要额外操作。
 
 ### 2. 装 Python 依赖
 
@@ -127,6 +139,103 @@ python -m src.ingest /path/to/your_data.json
 | `collection.data.insert_many(...)` | 批量写入 |
 | `collection.query.near_vector(near_vector=..., limit=...)` | 按向量相似度检索 |
 | `MetadataQuery(distance=True)` | 让返回结果里带上距离（可选：score、certainty 等） |
+
+---
+
+## Web UI 与 API
+
+### 启动
+
+```bash
+uvicorn src.app:app --reload --port 8889
+```
+
+| 地址 | 用途 |
+|---|---|
+| <http://localhost:8889> | 搜索页面 |
+| <http://localhost:8889/ingest> | 写入页面 |
+| <http://localhost:8889/docs> | Swagger API 文档 |
+
+---
+
+### REST API 说明
+
+#### POST `/api/ingest` — 写入文本
+
+**请求体（JSON）**：
+
+```json
+{
+  "texts": ["第一条文本", "第二条文本"]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `texts` | `string[]` | 是 | 要写入的文本列表，ID 自动递增 |
+
+**响应体**：
+
+```json
+{"inserted": 2, "ids": [11, 12]}
+```
+
+**curl 示例**：
+
+```bash
+curl -X POST http://localhost:8889/api/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"texts": ["巴黎是法国的首都", "向量数据库用于语义检索"]}'
+```
+
+> 与命令行 `ingest.py` 不同，Web API 写入是**增量的**（不会删除已有数据）。底层用 `generate_uuid5(str(id))` 生成稳定 UUID，重复提交同一 id 的文本会覆盖而不会重复。
+
+---
+
+#### POST `/api/search` — 语义搜索
+
+**请求体（JSON）**：
+
+```json
+{
+  "query": "法国著名地标",
+  "limit": 5
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `query` | `string` | 是 | — | 查询文本 |
+| `limit` | `int` | 否 | `5` | 返回条数，最大 20 |
+
+**响应体**：
+
+```json
+{
+  "query": "法国著名地标",
+  "results": [
+    {"id": 1, "text": "The Eiffel Tower is ...", "score": 0.7432}
+  ]
+}
+```
+
+`score` = 1 − cosine distance，范围 0 ~ 1，越大越相似。
+
+**curl 示例**：
+
+```bash
+curl -X POST http://localhost:8889/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "法国著名地标", "limit": 3}'
+```
+
+---
+
+### 数据存储说明
+
+写入数据双重保存：
+1. **Weaviate**（向量库）：用 UUID 主键 + `doc_id` 字段存储
+2. **`data/user_data.json`**：本地备份，Weaviate 数据清空后可用 `python -m src.ingest ../data/user_data.json` 重建
 
 ---
 

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% set active = "search" %}
+{% block title %}语义搜索 · Qdrant Demo{% endblock %}
+{% block content %}
+
+<h1>
+  语义搜索
+  <a href="/docs#/语义搜索/api_search_api_search_post" class="docs-link" target="_blank">查看 POST /api/search 文档 ↗</a>
+</h1>
+
+<div class="card">
+  <form method="post" action="/search">
+    <div class="form-row">
+      <div class="flex1">
+        <label for="query">输入查询文本</label>
+        <input type="text" name="query" id="query"
+               placeholder="例如：法国著名建筑"
+               value="{{ query or '' }}" required autofocus>
+      </div>
+      <div>
+        <label for="limit">返回条数</label>
+        <input type="number" name="limit" id="limit"
+               value="{{ limit or 5 }}" min="1" max="20">
+      </div>
+      <button type="submit" class="btn">搜索</button>
+    </div>
+  </form>
+</div>
+
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+{% if results is defined and query %}
+<div class="card">
+  <div style="font-size:13px;color:#94a3b8;margin-bottom:12px">
+    查询「{{ query }}」，返回 {{ results | length }} 条结果
+  </div>
+  {% if results %}
+  <div class="result-list">
+    {% for r in results %}
+    <div class="result-item">
+      <div class="result-meta">
+        <span class="score-badge">score {{ r.score }}</span>
+        <span class="id-badge">id={{ r.id }}</span>
+      </div>
+      <div class="result-text">{{ r.text }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="no-result">没有找到相关内容，先去
+    <a href="/ingest" style="color:#6366f1">写入数据</a>吧。
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

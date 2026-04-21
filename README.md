@@ -93,6 +93,27 @@ python -m src.search                                   # 交互式语义搜索
 
 ---
 
+## Web UI 快速上手
+
+每个子项目都内置了一个 **FastAPI Web 应用**，不需要在命令行里敲命令，打开浏览器就能写数据、做搜索。
+
+```bash
+# 以 qdrant-demo 为例（先确保 docker compose up -d 已跑）
+cd qdrant-demo
+source .venv/bin/activate
+uvicorn src.app:app --reload --port 8888
+```
+
+| 子项目 | 默认端口 | 搜索页 | 写入页 | API 文档 |
+|---|---|---|---|---|
+| qdrant-demo | 8888 | <http://localhost:8888> | <http://localhost:8888/ingest> | <http://localhost:8888/docs> |
+| weaviate-demo | 8889 | <http://localhost:8889> | <http://localhost:8889/ingest> | <http://localhost:8889/docs> |
+| milvus-demo | 8890 | <http://localhost:8890> | <http://localhost:8890/ingest> | <http://localhost:8890/docs> |
+
+每个子项目的 README 里有完整的 API 接口说明（请求格式、响应格式、curl 示例）。
+
+---
+
 ## 这个项目解决什么问题
 
 向量数据库的官方文档通常各写各的，术语不统一（Milvus 叫 *collection*，Weaviate 叫 *class/collection*，Qdrant 也叫 *collection* 但字段叫 *payload*），新手很容易被细节劝退。
@@ -141,6 +162,157 @@ semantic-sandbox/
 python3 --version
 docker --version
 docker compose version
+```
+
+---
+
+## Docker 安装与配置
+
+> 已经装好 Docker 的可跳过本节，直接看[三者对比速查](#三者对比速查)。
+
+### 安装 Docker
+
+**macOS / Windows — 推荐 Docker Desktop**
+
+前往 [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/) 下载对应版本：
+
+| 平台 | 说明 |
+|---|---|
+| macOS (Apple Silicon / M 系列) | 下载 `.dmg`，双击安装，拖到 Applications |
+| macOS (Intel) | 同上，选 Intel 版本 |
+| Windows 10/11 | 下载 `.exe`，按向导安装；需要 WSL 2（安装器会自动提示） |
+
+安装后启动 Docker Desktop，等待菜单栏 / 任务栏图标变为 **绿色（Running）** 状态。
+
+**Linux (Ubuntu / Debian)**
+
+```bash
+# 使用官方一键安装脚本
+curl -fsSL https://get.docker.com | sh
+
+# 把当前用户加入 docker 组，避免每次都要 sudo
+sudo usermod -aG docker $USER
+newgrp docker          # 或重新登录终端使生效
+
+# 安装 Compose v2 插件（Ubuntu 22.04+ 通常已自带）
+sudo apt-get install -y docker-compose-plugin
+```
+
+**Linux (CentOS / RHEL)**
+
+```bash
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+```
+
+安装完后统一验证：
+
+```bash
+docker --version          # Docker version 26.x.x ...
+docker compose version    # Docker Compose version v2.x.x
+docker run hello-world    # 能看到 "Hello from Docker!" 说明一切正常
+```
+
+> **v1 vs v2**：本项目用 `docker compose`（空格，Compose v2），不是老的 `docker-compose`（连字符，v1）。如果运行 `docker compose version` 报错，说明还是 v1，需要升级或安装 Compose v2 插件。
+
+---
+
+### 为 Milvus 调大 Docker 内存
+
+Milvus 需要同时运行三个容器（etcd + minio + milvus），**内存不够会导致容器反复重启**（Exit Code 137 = 被系统 OOM Kill）。
+
+各子项目内存要求：
+
+| 子项目 | 最低内存 | 推荐 |
+|---|---|---|
+| Qdrant | 1 GB | 2 GB |
+| Weaviate | 1 GB | 2 GB |
+| **Milvus** | **4 GB** | **6 GB** |
+
+**macOS / Windows (Docker Desktop)**：
+
+1. 打开 Docker Desktop → 点右上角 ⚙️ Settings
+2. 左侧选 **Resources → Advanced**
+3. 把 **Memory** 滑块调到 ≥ 4 GB（只跑 Qdrant/Weaviate 的话 2 GB 够用）
+4. 点右下角 **Apply & Restart**，等 Docker Desktop 重启完成
+
+**Linux**：默认无内存上限（直接使用宿主机内存），确保宿主机可用内存满足上表即可。可以用 `free -h` 查看。
+
+---
+
+### 配置 Docker 镜像加速（国内用户）
+
+国内从 Docker Hub 拉取镜像经常超时或限速。配置镜像加速器可以大幅提速：
+
+**macOS / Windows (Docker Desktop)**：
+
+1. 打开 Docker Desktop → Settings → **Docker Engine**
+2. 在右侧 JSON 配置中加入 `registry-mirrors` 字段：
+
+```json
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com"
+  ]
+}
+```
+
+3. 点 **Apply & Restart**
+
+**Linux (`/etc/docker/daemon.json`)**：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com"
+  ]
+}
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+验证镜像加速是否生效：
+
+```bash
+docker info | grep -A 5 "Registry Mirrors"
+```
+
+> **注意**：镜像加速器地址可能会失效或限速，如果某个地址不稳定，可以去 [https://status.daocloud.io](https://status.daocloud.io) 或搜索最新可用地址。
+
+---
+
+### Docker 常用命令速查
+
+```bash
+# 查看所有运行中的容器
+docker ps
+
+# 查看某个 compose 项目所有容器的状态（在子项目目录下执行）
+docker compose ps
+
+# 查看容器日志
+docker compose logs qdrant          # 看指定服务的日志
+docker compose logs -f milvus       # -f 实时跟踪
+
+# 启动 / 停止
+docker compose up -d                # 后台启动
+docker compose down                 # 停止容器，保留数据卷
+docker compose down -v              # ⚠️ 停止并删除数据卷（数据清空）
+
+# 重新拉取最新镜像（镜像版本有更新时）
+docker compose pull
+docker compose up -d --force-recreate
+
+# 进入容器内部（调试用）
+docker exec -it sandbox-qdrant sh
 ```
 
 ---
@@ -205,7 +377,13 @@ A: 通常是两个原因之一：（1）在下载嵌入模型，运行过 `scrip
 A: 设置镜像环境变量：`export HF_ENDPOINT=https://hf-mirror.com`，然后重跑命令。建议写进 shell 配置一劳永逸。
 
 **Q: Docker 启动 Milvus 失败？**
-A: 八成是内存不够。Docker Desktop 默认内存偏小，把资源调到 ≥4GB 再试。
+A: 八成是内存不够。Docker Desktop 默认内存偏小，把资源调到 ≥4GB 再试（路径：Settings → Resources → Advanced → Memory）。
+
+**Q: `docker compose` 提示命令不存在？**
+A: 你装的可能是老版 Compose v1（`docker-compose`，有连字符）。本项目用 v2，参考上面"Docker 安装"一节升级。Linux 用 `sudo apt-get install docker-compose-plugin` 即可。
+
+**Q: `docker compose up -d` 时拉镜像超时/报 `timeout` 或 `connection refused`？**
+A: 国内访问 Docker Hub 不稳定。参考上面"配置 Docker 镜像加速"一节，配置国内镜像源后重试。
 
 **Q: 代码里怎么都没写密码 / API Key？**
 A: 本地 Docker 起的服务默认没开鉴权，仅供学习。生产环境必须开启认证，各子项目 README 的"生产注意事项"有说明。

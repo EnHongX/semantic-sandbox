@@ -28,13 +28,22 @@ qdrant-demo/
 ```bash
 cd qdrant-demo
 docker compose up -d
-
-# 验证
-docker compose ps
-curl http://localhost:6333/readyz     # 返回 "all shards are ready"
 ```
 
-Web 控制台（可以直接看 collection 和数据）：<http://localhost:6333/dashboard>
+Qdrant 启动很快，约 **3~5 秒**就绪。验证：
+
+```bash
+# 查看容器状态（应为 Up 或 running）
+docker compose ps
+
+# 健康检查接口，返回 "all shards are ready" 说明就绪
+curl http://localhost:6333/readyz
+
+# 如果容器没起来，查日志
+docker compose logs qdrant
+```
+
+**Web 控制台**：<http://localhost:6333/dashboard> — 可以在浏览器里直接浏览 collection 和向量数据，入库后来这里确认数据是否写进去了。
 
 ### 2. 装 Python 依赖
 
@@ -145,6 +154,126 @@ python -m src.ingest
 | `client.upsert` | 插入或更新（按 id） |
 | `client.search` | 给一个向量，返回 top-k 最近邻 |
 | `payload` | 类似 MongoDB 的文档，存业务字段 |
+
+---
+
+## Web UI 与 API
+
+除了命令行脚本，本子项目还提供一个基于 **FastAPI** 的 Web 界面和 REST API。
+
+### 启动
+
+```bash
+# 确保已激活虚拟环境，且 qdrant 容器正在运行
+uvicorn src.app:app --reload --port 8888
+```
+
+浏览器访问：
+
+| 地址 | 用途 |
+|---|---|
+| <http://localhost:8888> | 搜索页面（在线输入关键词，看语义检索结果） |
+| <http://localhost:8888/ingest> | 写入页面（每行一条文本，点击写入向量库） |
+| <http://localhost:8888/docs> | Swagger API 文档（可在线试用接口） |
+
+---
+
+### REST API 说明
+
+#### POST `/api/ingest` — 写入文本
+
+**请求体（JSON）**：
+
+```json
+{
+  "texts": [
+    "第一条要写入的文本",
+    "第二条要写入的文本"
+  ]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `texts` | `string[]` | 是 | 要写入的文本列表，每条独立向量化。ID 自动递增，无需手动指定 |
+
+**响应体（JSON）**：
+
+```json
+{
+  "inserted": 2,
+  "ids": [11, 12]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `inserted` | `int` | 实际写入条数 |
+| `ids` | `int[]` | 写入记录自动分配的 ID 列表 |
+
+**curl 示例**：
+
+```bash
+curl -X POST http://localhost:8888/api/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"texts": ["巴黎是法国的首都", "向量数据库用于语义检索"]}'
+```
+
+---
+
+#### POST `/api/search` — 语义搜索
+
+**请求体（JSON）**：
+
+```json
+{
+  "query": "法国著名地标",
+  "limit": 5
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `query` | `string` | 是 | — | 查询文本，系统自动向量化 |
+| `limit` | `int` | 否 | `5` | 返回结果条数，最大 20 |
+
+**响应体（JSON）**：
+
+```json
+{
+  "query": "法国著名地标",
+  "results": [
+    {"id": 1, "text": "The Eiffel Tower is ...", "score": 0.7432},
+    {"id": 3, "text": "The Great Wall of China ...", "score": 0.1205}
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `query` | `string` | 原始查询文本 |
+| `results[].id` | `int` | 记录 ID |
+| `results[].text` | `string` | 原始文本内容 |
+| `results[].score` | `float` | 余弦相似度（-1 ~ 1，越接近 1 越相似） |
+
+**curl 示例**：
+
+```bash
+curl -X POST http://localhost:8888/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "法国著名地标", "limit": 3}'
+```
+
+---
+
+### 数据存储说明
+
+通过 Web UI 或 API 写入的数据会**双重保存**：
+
+1. **Qdrant**（向量库）：用于语义检索，ID 对应 `PointStruct.id`
+2. **`data/user_data.json`**（本地 JSON 文件）：追加写入，格式与 `sample_en.json` 一致，Qdrant 数据清空后可用 `python -m src.ingest ../data/user_data.json` 重新入库
+
+> 为什么双写？ 向量库适合检索，但不擅长原始数据备份。把文本同时存一份 JSON，方便查看、编辑、重新入库，不依赖向量库的健康状态。
 
 ---
 

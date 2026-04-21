@@ -17,12 +17,16 @@
 
 <div class="card">
   <form method="post" action="/ingest">
-    <label for="texts">每行一条文本，写入后自动向量化并存入 Qdrant</label>
+    <label for="texts">每行输入一条文本，写入后自动向量化并存入向量库</label>
     <textarea name="texts" id="texts" rows="8"
               placeholder="第一行文本&#10;第二行文本&#10;第三行文本&#10;（空行自动跳过）">{{ texts or '' }}</textarea>
     <p class="hint">每行算一条独立记录，系统自动分配 ID。数据同时追加到 <code>data/user_data.json</code> 做本地备份。</p>
-    <div style="margin-top:14px">
+
+    <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="submit" class="btn">写入向量库</button>
+      <span style="color:#cbd5e1;font-size:13px">或一键加载：</span>
+      <button type="button" class="btn btn-outline btn-sm" onclick="loadSample('en')">英文示例数据</button>
+      <button type="button" class="btn btn-outline btn-sm" onclick="loadSample('zh')">中文示例数据</button>
     </div>
   </form>
 </div>
@@ -31,14 +35,35 @@
   <strong>📌 数据存储说明</strong><br>
   通过此页面写入的文本会：
   <ol>
-    <li>被嵌入模型转换为向量，写入 Qdrant（用于后续语义检索）</li>
-    <li>追加保存到项目根目录的 <code>data/user_data.json</code>（持久化备份；Qdrant 数据清空后可用命令行重新入库）</li>
+    <li>被嵌入模型转换为向量，写入向量库（用于后续语义检索）</li>
+    <li>追加保存到项目根目录的 <code>data/user_data.json</code>（持久化备份；向量库数据清空后可用命令行重新入库）</li>
   </ol>
   <br>
   <strong>💡 批量写入（命令行）</strong><br>
-  准备好格式为 <code>[{"id": 1, "text": "..."}]</code> 的 JSON 文件后执行：
-  <br><br>
+  准备好格式为 <code>[{"id": 1, "text": "...", "category": "..."}]</code> 的 JSON 文件后执行：<br><br>
   <code>python -m src.ingest /path/to/your_data.json</code>
+  &nbsp;&nbsp;或&nbsp;&nbsp;
+  <code>make ingest-large</code>（载入 100 条大数据集）
 </div>
+
+<script>
+async function loadSample(lang) {
+  const btn = event.currentTarget;
+  const original = btn.textContent;
+  btn.textContent = '加载中…';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/samples/' + lang);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    document.getElementById('texts').value = data.texts.join('\n');
+  } catch (e) {
+    alert('加载失败：' + e.message);
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+</script>
 
 {% endblock %}

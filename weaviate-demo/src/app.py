@@ -233,6 +233,28 @@ async def api_search(req: SearchRequest) -> SearchResponse:
         client.close()
 
 
+# ─── 示例数据接口 ──────────────────────────────────────────────────────────────
+
+_SAMPLE_FILES = {
+    "en": _PROJECT_DIR.parent / "data" / "sample_en.json",
+    "zh": _PROJECT_DIR.parent / "data" / "sample_zh.json",
+}
+
+
+@app.get(
+    "/api/samples/{lang}",
+    summary="获取示例数据文本列表",
+    description="返回 sample_en.json 或 sample_zh.json 中的文本列表，供 Web UI 一键加载。",
+    tags=["数据写入"],
+)
+async def api_samples(lang: str) -> dict:
+    if lang not in _SAMPLE_FILES:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"lang 只支持 en 或 zh，收到 {lang!r}")
+    data = json.loads(_SAMPLE_FILES[lang].read_text(encoding="utf-8"))
+    return {"lang": lang, "texts": [r["text"] for r in data]}
+
+
 # ─── Web 页面 ──────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)

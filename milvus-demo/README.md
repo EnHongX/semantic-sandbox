@@ -389,6 +389,8 @@ curl -X POST http://localhost:8890/api/ingest \
   -d '{"texts": ["巴黎是法国的首都", "向量数据库用于语义检索"]}'
 ```
 
+> Web/API 写入只接收文本并自动分配 ID；如果需要保留 `category` 等元数据，请使用命令行 `python -m src.ingest your.json`。
+
 ---
 
 #### POST `/api/search` — 语义搜索
@@ -398,7 +400,8 @@ curl -X POST http://localhost:8890/api/ingest \
 ```json
 {
   "query": "法国著名地标",
-  "limit": 5
+  "limit": 5,
+  "category": "geography"
 }
 ```
 
@@ -406,6 +409,7 @@ curl -X POST http://localhost:8890/api/ingest \
 |---|---|---|---|---|
 | `query` | `string` | 是 | — | 查询文本 |
 | `limit` | `int` | 否 | `5` | 返回条数，最大 20 |
+| `category` | `string` | 否 | `null` | 可选分类过滤 |
 
 **响应体**：
 
@@ -427,8 +431,20 @@ curl -X POST http://localhost:8890/api/ingest \
 ```bash
 curl -X POST http://localhost:8890/api/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "法国著名地标", "limit": 3}'
+  -d '{"query": "法国著名地标", "limit": 3, "category": "geography"}'
 ```
+
+---
+
+#### 其他辅助接口
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `POST` | `/api/upload` | 上传 JSON/CSV 批量写入，只读取 `text` 字段 |
+| `GET` | `/api/count` | 查询当前集合记录数 |
+| `DELETE` | `/api/record/{record_id}` | 删除指定 ID 的记录 |
+| `DELETE` | `/api/records` | 清空集合并清空 `data/user_data.json` |
+| `GET` | `/api/samples/{lang}` | 返回 `en` 或 `zh` 示例文本 |
 
 ---
 

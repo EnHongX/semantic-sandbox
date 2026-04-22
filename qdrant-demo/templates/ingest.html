@@ -37,7 +37,7 @@
     <input type="file" name="file" id="file" accept=".json,.csv" required
            style="display:block;margin-bottom:8px;font-size:14px">
     <p class="hint" style="margin-bottom:10px">
-      支持 <strong>JSON</strong>（<code>[{"text":"..."}]</code>）或 <strong>CSV</strong>（首行含 <code>text</code> 列）。额外字段（如 <code>category</code>）会一并写入。
+      支持 <strong>JSON</strong>（<code>[{"text":"..."}]</code>）或 <strong>CSV</strong>（首行含 <code>text</code> 列）。当前上传只读取 <code>text</code> 字段；如需保留 <code>category</code> 等元数据，请使用下方命令行入库。
     </p>
     <button type="submit" class="btn btn-sm">上传并写入</button>
   </form>

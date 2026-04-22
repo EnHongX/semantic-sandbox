@@ -17,3 +17,9 @@ services:
     volumes:
       - ./weaviate_data:/var/lib/weaviate
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

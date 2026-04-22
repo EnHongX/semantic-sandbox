@@ -111,7 +111,10 @@ def _upsert_records(client: weaviate.WeaviateClient, records: list[dict]) -> int
 
 def _load_user_data() -> list[dict]:
     if _USER_DATA_FILE.exists():
-        return json.loads(_USER_DATA_FILE.read_text(encoding="utf-8"))
+        try:
+            return json.loads(_USER_DATA_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return []
     return []
 
 
@@ -126,8 +129,11 @@ def _next_id() -> int:
     ids: list[int] = []
     for f in [DATA_FILE, _USER_DATA_FILE]:
         if f.exists():
-            data = json.loads(f.read_text(encoding="utf-8"))
-            ids.extend(int(r.get("id", 0)) for r in data if isinstance(r.get("id"), int))
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                ids.extend(int(r.get("id", 0)) for r in data if isinstance(r.get("id"), int))
+            except (json.JSONDecodeError, ValueError):
+                pass
     return max(ids, default=0) + 1
 
 

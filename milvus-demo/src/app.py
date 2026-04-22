@@ -60,7 +60,10 @@ def _fmt_exc(exc: Exception) -> str:
 
 def _load_user_data() -> list[dict]:
     if _USER_DATA_FILE.exists():
-        return json.loads(_USER_DATA_FILE.read_text(encoding="utf-8"))
+        try:
+            return json.loads(_USER_DATA_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return []
     return []
 
 
@@ -75,8 +78,11 @@ def _next_id() -> int:
     ids: list[int] = []
     for f in [DATA_FILE, _USER_DATA_FILE]:
         if f.exists():
-            data = json.loads(f.read_text(encoding="utf-8"))
-            ids.extend(int(r.get("id", 0)) for r in data if isinstance(r.get("id"), int))
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                ids.extend(int(r.get("id", 0)) for r in data if isinstance(r.get("id"), int))
+            except (json.JSONDecodeError, ValueError):
+                pass
     return max(ids, default=0) + 1
 
 
@@ -150,22 +156,25 @@ async def health():
 )
 async def api_ingest(req: IngestRequest) -> IngestResponse:
     client = _get_client()
-    ensure_collection(client, embedding_dim())
+    try:
+        ensure_collection(client, embedding_dim())
 
-    start_id = _next_id()
-    new_records = [
-        {"id": start_id + i, "text": t.strip()}
-        for i, t in enumerate(req.texts)
-        if t.strip()
-    ]
-    if not new_records:
-        return IngestResponse(inserted=0, ids=[])
+        start_id = _next_id()
+        new_records = [
+            {"id": start_id + i, "text": t.strip()}
+            for i, t in enumerate(req.texts)
+            if t.strip()
+        ]
+        if not new_records:
+            return IngestResponse(inserted=0, ids=[])
 
-    upsert(client, new_records)
-    existing = _load_user_data()
-    existing.extend(new_records)
-    _save_user_data(existing)
-    return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
+        upsert(client, new_records)
+        existing = _load_user_data()
+        existing.extend(new_records)
+        _save_user_data(existing)
+        return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
+    finally:
+        client.close()
 
 
 @app.post(
@@ -181,25 +190,28 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
 )
 async def api_search(req: SearchRequest) -> SearchResponse:
     client = _get_client()
-    client.load_collection(collection_name=COLLECTION_NAME)
-    [vector] = embed([req.query])
-    results_raw = client.search(
-        collection_name=COLLECTION_NAME,
-        data=[vector],
-        limit=min(req.limit, 20),
-        output_fields=["text"],
-        search_params={"metric_type": "COSINE"},
-    )
-    hits = results_raw[0] if results_raw else []
-    results = [
-        SearchResult(
-            id=int(h["id"]),
-            text=h.get("entity", {}).get("text", ""),
-            score=round(float(h.get("distance", 0)), 4),
+    try:
+        client.load_collection(collection_name=COLLECTION_NAME)
+        [vector] = embed([req.query])
+        results_raw = client.search(
+            collection_name=COLLECTION_NAME,
+            data=[vector],
+            limit=min(req.limit, 20),
+            output_fields=["text"],
+            search_params={"metric_type": "COSINE"},
         )
-        for h in hits
-    ]
-    return SearchResponse(query=req.query, results=results)
+        hits = results_raw[0] if results_raw else []
+        results = [
+            SearchResult(
+                id=int(h["id"]),
+                text=h.get("entity", {}).get("text", ""),
+                score=round(float(h.get("distance", 0)), 4),
+            )
+            for h in hits
+        ]
+        return SearchResponse(query=req.query, results=results)
+    finally:
+        client.close()
 
 
 # ─── 示例数据接口 ──────────────────────────────────────────────────────────────

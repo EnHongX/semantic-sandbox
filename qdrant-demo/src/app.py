@@ -10,11 +10,13 @@
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -29,7 +31,6 @@ from .ingest import ensure_collection, upsert
 
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
 _TEMPLATES_DIR = _PROJECT_DIR / "templates"
-# 通过 UI 新增的数据追加到这里，与示例数据分开；三个子项目共用同一文件
 _USER_DATA_FILE = _PROJECT_DIR.parent / "data" / "user_data.json"
 
 app = FastAPI(
@@ -76,6 +77,10 @@ def _save_user_data(records: list[dict]) -> None:
     )
 
 
+def _remove_from_user_data(record_id: int) -> None:
+    _save_user_data([r for r in _load_user_data() if r.get("id") != record_id])
+
+
 def _next_id() -> int:
     """取所有数据文件中最大 id + 1，保证 ID 不冲突。"""
     ids: list[int] = []
@@ -87,6 +92,13 @@ def _next_id() -> int:
             except (json.JSONDecodeError, ValueError):
                 pass
     return max(ids, default=0) + 1
+
+
+def _parse_upload(content: bytes, filename: str) -> list[dict]:
+    if filename.endswith(".csv"):
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8")))
+        return list(reader)
+    return json.loads(content.decode("utf-8"))
 
 
 # ─── Pydantic 模型 ──────────────────────────────────────────────────────────────
@@ -109,14 +121,15 @@ class IngestResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """搜索请求体。query 是查询文本，limit 控制返回条数（默认 5，最大 20）。"""
+    """搜索请求体。query 是查询文本，limit 控制返回条数（默认 5，最大 20），category 可选分类过滤。"""
 
     query: str
     limit: int = 5
+    category: str | None = None
 
     model_config = {
         "json_schema_extra": {
-            "example": {"query": "法国著名地标", "limit": 5}
+            "example": {"query": "法国著名地标", "limit": 5, "category": "geography"}
         }
     }
 
@@ -161,7 +174,6 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     client = _get_client()
     try:
         ensure_collection(client, embedding_dim())
-
         start_id = _next_id()
         new_records = [
             {"id": start_id + i, "text": t.strip()}
@@ -170,13 +182,41 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
         ]
         if not new_records:
             return IngestResponse(inserted=0, ids=[])
-
         upsert(client, new_records)
-
         existing = _load_user_data()
         existing.extend(new_records)
         _save_user_data(existing)
+        return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
+    finally:
+        client.close()
 
+
+@app.post(
+    "/api/upload",
+    response_model=IngestResponse,
+    summary="上传文件批量写入向量库",
+    description="上传 JSON（`[{\"text\":\"...\"}]`）或 CSV（首行含 `text` 列）文件，批量向量化写入 Qdrant。",
+    tags=["数据写入"],
+)
+async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
+    from fastapi import HTTPException
+    content = await file.read()
+    try:
+        records_raw = _parse_upload(content, file.filename or "")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"文件解析失败：{exc}")
+    texts = [str(r.get("text", "")).strip() for r in records_raw if str(r.get("text", "")).strip()]
+    if not texts:
+        raise HTTPException(status_code=400, detail="文件中没有找到有效的 text 字段")
+    client = _get_client()
+    try:
+        ensure_collection(client, embedding_dim())
+        start_id = _next_id()
+        new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(texts)]
+        upsert(client, new_records)
+        existing = _load_user_data()
+        existing.extend(new_records)
+        _save_user_data(existing)
         return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
     finally:
         client.close()
@@ -188,7 +228,7 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     summary="语义搜索",
     description=(
         "将 `query` 向量化后在 Qdrant 里做近邻检索，返回最相近的 `limit` 条结果。\n\n"
-        "`score` 为余弦相似度（-1 ~ 1），越接近 1 越相似。"
+        "`score` 为余弦相似度（-1 ~ 1），越接近 1 越相似。`category` 可选，传入时只在该分类内检索。"
     ),
     tags=["语义搜索"],
 )
@@ -196,10 +236,15 @@ async def api_search(req: SearchRequest) -> SearchResponse:
     client = _get_client()
     try:
         [vector] = embed([req.query])
+        query_filter = (
+            qm.Filter(must=[qm.FieldCondition(key="category", match=qm.MatchValue(value=req.category))])
+            if req.category else None
+        )
         hits = client.search(
             collection_name=COLLECTION_NAME,
             query_vector=vector,
             limit=min(req.limit, 20),
+            query_filter=query_filter,
             with_payload=True,
         )
         results = [
@@ -211,6 +256,56 @@ async def api_search(req: SearchRequest) -> SearchResponse:
             for h in hits
         ]
         return SearchResponse(query=req.query, results=results)
+    finally:
+        client.close()
+
+
+@app.get(
+    "/api/count",
+    summary="查询向量库中的记录总数",
+    tags=["数据写入"],
+)
+async def api_count() -> dict:
+    client = _get_client()
+    try:
+        result = client.count(collection_name=COLLECTION_NAME, exact=True)
+        return {"count": result.count}
+    except Exception:
+        return {"count": 0}
+    finally:
+        client.close()
+
+
+@app.delete(
+    "/api/record/{record_id}",
+    summary="删除指定 ID 的记录",
+    tags=["数据写入"],
+)
+async def api_delete_record(record_id: int) -> dict:
+    client = _get_client()
+    try:
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=qm.PointIdsList(points=[record_id]),
+        )
+        _remove_from_user_data(record_id)
+        return {"deleted": record_id}
+    finally:
+        client.close()
+
+
+@app.delete(
+    "/api/records",
+    summary="清空向量库中所有记录（集合重建）",
+    tags=["数据写入"],
+)
+async def api_clear_records() -> dict:
+    client = _get_client()
+    try:
+        client.delete_collection(collection_name=COLLECTION_NAME)
+        ensure_collection(client, embedding_dim())
+        _save_user_data([])
+        return {"cleared": True}
     finally:
         client.close()
 
@@ -249,15 +344,21 @@ async def search_form(
     request: Request,
     query: Annotated[str, Form()],
     limit: Annotated[int, Form()] = 5,
+    category: Annotated[str, Form()] = "",
 ):
     results, error = [], None
+    client = _get_client()
     try:
-        client = _get_client()
         [vector] = embed([query])
+        query_filter = (
+            qm.Filter(must=[qm.FieldCondition(key="category", match=qm.MatchValue(value=category))])
+            if category else None
+        )
         hits = client.search(
             collection_name=COLLECTION_NAME,
             query_vector=vector,
             limit=min(limit, 20),
+            query_filter=query_filter,
             with_payload=True,
         )
         results = [
@@ -266,9 +367,11 @@ async def search_form(
         ]
     except Exception as exc:
         error = _fmt_exc(exc)
+    finally:
+        client.close()
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "query": query, "limit": limit, "results": results, "error": error},
+        {"request": request, "query": query, "limit": limit, "category": category, "results": results, "error": error},
     )
 
 
@@ -282,25 +385,56 @@ async def ingest_form(
     request: Request,
     texts: Annotated[str, Form()],
 ):
-    message, error, inserted_ids = None, None, []
+    message, error = None, None
     try:
         lines = [t.strip() for t in texts.strip().splitlines() if t.strip()]
         if not lines:
             error = "请至少输入一行文本"
         else:
             client = _get_client()
-            ensure_collection(client, embedding_dim())
-            start_id = _next_id()
-            new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(lines)]
-            upsert(client, new_records)
-            existing = _load_user_data()
-            existing.extend(new_records)
-            _save_user_data(existing)
-            inserted_ids = [r["id"] for r in new_records]
-            message = f"成功写入 {len(new_records)} 条，自动分配 ID：{inserted_ids}"
+            try:
+                ensure_collection(client, embedding_dim())
+                start_id = _next_id()
+                new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(lines)]
+                upsert(client, new_records)
+                existing = _load_user_data()
+                existing.extend(new_records)
+                _save_user_data(existing)
+                message = f"成功写入 {len(new_records)} 条，自动分配 ID：{[r['id'] for r in new_records]}"
+            finally:
+                client.close()
     except Exception as exc:
         error = _fmt_exc(exc)
     return templates.TemplateResponse(
         "ingest.html",
         {"request": request, "texts": texts if error else "", "message": message, "error": error},
+    )
+
+
+@app.post("/ingest/upload", response_class=HTMLResponse, include_in_schema=False)
+async def upload_form(request: Request, file: UploadFile = File(...)):
+    message, error = None, None
+    try:
+        content = await file.read()
+        records_raw = _parse_upload(content, file.filename or "")
+        texts = [str(r.get("text", "")).strip() for r in records_raw if str(r.get("text", "")).strip()]
+        if not texts:
+            raise ValueError("文件中没有找到有效的 text 字段")
+        client = _get_client()
+        try:
+            ensure_collection(client, embedding_dim())
+            start_id = _next_id()
+            new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(texts)]
+            upsert(client, new_records)
+            existing = _load_user_data()
+            existing.extend(new_records)
+            _save_user_data(existing)
+            message = f"成功写入 {len(new_records)} 条，自动分配 ID：{[r['id'] for r in new_records]}"
+        finally:
+            client.close()
+    except Exception as exc:
+        error = _fmt_exc(exc)
+    return templates.TemplateResponse(
+        "ingest.html",
+        {"request": request, "message": message, "error": error},
     )

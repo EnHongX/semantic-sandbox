@@ -10,11 +10,13 @@
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -74,6 +76,10 @@ def _save_user_data(records: list[dict]) -> None:
     )
 
 
+def _remove_from_user_data(record_id: int) -> None:
+    _save_user_data([r for r in _load_user_data() if r.get("id") != record_id])
+
+
 def _next_id() -> int:
     ids: list[int] = []
     for f in [DATA_FILE, _USER_DATA_FILE]:
@@ -84,6 +90,13 @@ def _next_id() -> int:
             except (json.JSONDecodeError, ValueError):
                 pass
     return max(ids, default=0) + 1
+
+
+def _parse_upload(content: bytes, filename: str) -> list[dict]:
+    if filename.endswith(".csv"):
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8")))
+        return list(reader)
+    return json.loads(content.decode("utf-8"))
 
 
 # ─── Pydantic 模型 ─────────────────────────────────────────────────────────────
@@ -106,14 +119,15 @@ class IngestResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """搜索请求体。query 是查询文本，limit 控制返回条数（默认 5，最大 20）。"""
+    """搜索请求体。query 是查询文本，limit 控制返回条数（默认 5，最大 20），category 可选分类过滤。"""
 
     query: str
     limit: int = 5
+    category: str | None = None
 
     model_config = {
         "json_schema_extra": {
-            "example": {"query": "法国著名地标", "limit": 5}
+            "example": {"query": "法国著名地标", "limit": 5, "category": "geography"}
         }
     }
 
@@ -158,7 +172,6 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     client = _get_client()
     try:
         ensure_collection(client, embedding_dim())
-
         start_id = _next_id()
         new_records = [
             {"id": start_id + i, "text": t.strip()}
@@ -167,7 +180,37 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
         ]
         if not new_records:
             return IngestResponse(inserted=0, ids=[])
+        upsert(client, new_records)
+        existing = _load_user_data()
+        existing.extend(new_records)
+        _save_user_data(existing)
+        return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
+    finally:
+        client.close()
 
+
+@app.post(
+    "/api/upload",
+    response_model=IngestResponse,
+    summary="上传文件批量写入向量库",
+    description="上传 JSON（`[{\"text\":\"...\"}]`）或 CSV（首行含 `text` 列）文件，批量向量化写入 Milvus。",
+    tags=["数据写入"],
+)
+async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
+    from fastapi import HTTPException
+    content = await file.read()
+    try:
+        records_raw = _parse_upload(content, file.filename or "")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"文件解析失败：{exc}")
+    texts = [str(r.get("text", "")).strip() for r in records_raw if str(r.get("text", "")).strip()]
+    if not texts:
+        raise HTTPException(status_code=400, detail="文件中没有找到有效的 text 字段")
+    client = _get_client()
+    try:
+        ensure_collection(client, embedding_dim())
+        start_id = _next_id()
+        new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(texts)]
         upsert(client, new_records)
         existing = _load_user_data()
         existing.extend(new_records)
@@ -183,8 +226,7 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     summary="语义搜索",
     description=(
         "将 `query` 向量化后在 Milvus 里做近邻检索，返回最相近的 `limit` 条结果。\n\n"
-        "`score` 为 COSINE 相似度（-1 ~ 1），越接近 1 越相似。"
-        "注意：Milvus COSINE 指标下 `search` 返回的 `distance` 字段实际是相似度（不是距离），这里直接使用。"
+        "`score` 为 COSINE 相似度（-1 ~ 1），越接近 1 越相似。`category` 可选，传入时只在该分类内检索。"
     ),
     tags=["语义搜索"],
 )
@@ -193,13 +235,16 @@ async def api_search(req: SearchRequest) -> SearchResponse:
     try:
         client.load_collection(collection_name=COLLECTION_NAME)
         [vector] = embed([req.query])
-        results_raw = client.search(
-            collection_name=COLLECTION_NAME,
-            data=[vector],
-            limit=min(req.limit, 20),
-            output_fields=["text"],
-            search_params={"metric_type": "COSINE"},
-        )
+        search_kwargs: dict = {
+            "collection_name": COLLECTION_NAME,
+            "data": [vector],
+            "limit": min(req.limit, 20),
+            "output_fields": ["text"],
+            "search_params": {"metric_type": "COSINE"},
+        }
+        if req.category:
+            search_kwargs["filter"] = f'category == "{req.category}"'
+        results_raw = client.search(**search_kwargs)
         hits = results_raw[0] if results_raw else []
         results = [
             SearchResult(
@@ -210,6 +255,55 @@ async def api_search(req: SearchRequest) -> SearchResponse:
             for h in hits
         ]
         return SearchResponse(query=req.query, results=results)
+    finally:
+        client.close()
+
+
+@app.get(
+    "/api/count",
+    summary="查询向量库中的记录总数",
+    tags=["数据写入"],
+)
+async def api_count() -> dict:
+    client = _get_client()
+    try:
+        if COLLECTION_NAME not in client.list_collections():
+            return {"count": 0}
+        stats = client.get_collection_stats(collection_name=COLLECTION_NAME)
+        return {"count": int(stats.get("row_count", 0))}
+    except Exception:
+        return {"count": 0}
+    finally:
+        client.close()
+
+
+@app.delete(
+    "/api/record/{record_id}",
+    summary="删除指定 ID 的记录",
+    tags=["数据写入"],
+)
+async def api_delete_record(record_id: int) -> dict:
+    client = _get_client()
+    try:
+        client.delete(collection_name=COLLECTION_NAME, ids=[record_id])
+        _remove_from_user_data(record_id)
+        return {"deleted": record_id}
+    finally:
+        client.close()
+
+
+@app.delete(
+    "/api/records",
+    summary="清空向量库中所有记录（集合重建）",
+    tags=["数据写入"],
+)
+async def api_clear_records() -> dict:
+    client = _get_client()
+    try:
+        client.drop_collection(collection_name=COLLECTION_NAME)
+        ensure_collection(client, embedding_dim())
+        _save_user_data([])
+        return {"cleared": True}
     finally:
         client.close()
 
@@ -248,19 +342,23 @@ async def search_form(
     request: Request,
     query: Annotated[str, Form()],
     limit: Annotated[int, Form()] = 5,
+    category: Annotated[str, Form()] = "",
 ):
     results, error = [], None
+    client = _get_client()
     try:
-        client = _get_client()
         client.load_collection(collection_name=COLLECTION_NAME)
         [vector] = embed([query])
-        results_raw = client.search(
-            collection_name=COLLECTION_NAME,
-            data=[vector],
-            limit=min(limit, 20),
-            output_fields=["text"],
-            search_params={"metric_type": "COSINE"},
-        )
+        search_kwargs: dict = {
+            "collection_name": COLLECTION_NAME,
+            "data": [vector],
+            "limit": min(limit, 20),
+            "output_fields": ["text"],
+            "search_params": {"metric_type": "COSINE"},
+        }
+        if category:
+            search_kwargs["filter"] = f'category == "{category}"'
+        results_raw = client.search(**search_kwargs)
         hits = results_raw[0] if results_raw else []
         results = [
             {"id": int(h["id"]), "text": h.get("entity", {}).get("text", ""), "score": round(float(h.get("distance", 0)), 4)}
@@ -268,9 +366,11 @@ async def search_form(
         ]
     except Exception as exc:
         error = _fmt_exc(exc)
+    finally:
+        client.close()
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "query": query, "limit": limit, "results": results, "error": error},
+        {"request": request, "query": query, "limit": limit, "category": category, "results": results, "error": error},
     )
 
 
@@ -291,18 +391,49 @@ async def ingest_form(
             error = "请至少输入一行文本"
         else:
             client = _get_client()
-            ensure_collection(client, embedding_dim())
-            start_id = _next_id()
-            new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(lines)]
-            upsert(client, new_records)
-            existing = _load_user_data()
-            existing.extend(new_records)
-            _save_user_data(existing)
-            ids = [r["id"] for r in new_records]
-            message = f"成功写入 {len(new_records)} 条，自动分配 ID：{ids}"
+            try:
+                ensure_collection(client, embedding_dim())
+                start_id = _next_id()
+                new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(lines)]
+                upsert(client, new_records)
+                existing = _load_user_data()
+                existing.extend(new_records)
+                _save_user_data(existing)
+                message = f"成功写入 {len(new_records)} 条，自动分配 ID：{[r['id'] for r in new_records]}"
+            finally:
+                client.close()
     except Exception as exc:
         error = _fmt_exc(exc)
     return templates.TemplateResponse(
         "ingest.html",
         {"request": request, "texts": texts if error else "", "message": message, "error": error},
+    )
+
+
+@app.post("/ingest/upload", response_class=HTMLResponse, include_in_schema=False)
+async def upload_form(request: Request, file: UploadFile = File(...)):
+    message, error = None, None
+    try:
+        content = await file.read()
+        records_raw = _parse_upload(content, file.filename or "")
+        texts = [str(r.get("text", "")).strip() for r in records_raw if str(r.get("text", "")).strip()]
+        if not texts:
+            raise ValueError("文件中没有找到有效的 text 字段")
+        client = _get_client()
+        try:
+            ensure_collection(client, embedding_dim())
+            start_id = _next_id()
+            new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(texts)]
+            upsert(client, new_records)
+            existing = _load_user_data()
+            existing.extend(new_records)
+            _save_user_data(existing)
+            message = f"成功写入 {len(new_records)} 条，自动分配 ID：{[r['id'] for r in new_records]}"
+        finally:
+            client.close()
+    except Exception as exc:
+        error = _fmt_exc(exc)
+    return templates.TemplateResponse(
+        "ingest.html",
+        {"request": request, "message": message, "error": error},
     )

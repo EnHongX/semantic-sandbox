@@ -31,19 +31,36 @@
   </form>
 </div>
 
-<div class="info-box">
-  <strong>📌 数据存储说明</strong><br>
-  通过此页面写入的文本会：
-  <ol>
-    <li>被嵌入模型转换为向量，写入向量库（用于后续语义检索）</li>
-    <li>追加保存到项目根目录的 <code>data/user_data.json</code>（持久化备份；向量库数据清空后可用命令行重新入库）</li>
-  </ol>
-  <br>
-  <strong>💡 批量写入（命令行）</strong><br>
-  准备好格式为 <code>[{"id": 1, "text": "...", "category": "..."}]</code> 的 JSON 文件后执行：<br><br>
-  <code>python -m src.ingest /path/to/your_data.json</code>
-  &nbsp;&nbsp;或&nbsp;&nbsp;
-  <code>make ingest-large</code>（载入 100 条大数据集）
+<div class="card">
+  <label style="display:block;font-size:14px;font-weight:600;color:#334155;margin-bottom:10px">批量上传文件</label>
+  <form method="post" action="/ingest/upload" enctype="multipart/form-data">
+    <input type="file" name="file" id="file" accept=".json,.csv" required
+           style="display:block;margin-bottom:8px;font-size:14px">
+    <p class="hint" style="margin-bottom:10px">
+      支持 <strong>JSON</strong>（<code>[{"text":"..."}]</code>）或 <strong>CSV</strong>（首行含 <code>text</code> 列）。额外字段（如 <code>category</code>）会一并写入。
+    </p>
+    <button type="submit" class="btn btn-sm">上传并写入</button>
+  </form>
+</div>
+
+<div class="info-box" style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+  <div>
+    <strong>📌 数据存储说明</strong><br>
+    通过此页面写入的文本会：
+    <ol>
+      <li>被嵌入模型转换为向量，写入向量库（用于后续语义检索）</li>
+      <li>追加保存到项目根目录的 <code>data/user_data.json</code>（持久化备份；向量库数据清空后可用命令行重新入库）</li>
+    </ol>
+    <br>
+    <strong>💡 批量写入（命令行）</strong><br>
+    准备好格式为 <code>[{"id": 1, "text": "...", "category": "..."}]</code> 的 JSON 文件后执行：<br><br>
+    <code>python -m src.ingest /path/to/your_data.json</code>
+    &nbsp;&nbsp;或&nbsp;&nbsp;
+    <code>make ingest-large</code>（载入 100 条大数据集）
+  </div>
+  <button type="button" class="btn btn-danger btn-sm" style="white-space:nowrap;flex-shrink:0" onclick="clearAll()">
+    清空全部数据
+  </button>
 </div>
 
 <script>
@@ -60,6 +77,24 @@ async function loadSample(lang) {
   } catch (e) {
     alert('加载失败：' + e.message);
   } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+
+async function clearAll() {
+  if (!confirm('确认清空向量库中的所有数据？\n此操作不可恢复。')) return;
+  const btn = event.currentTarget;
+  const original = btn.textContent;
+  btn.textContent = '清空中…';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/records', {method: 'DELETE'});
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    alert('已清空向量库');
+    location.reload();
+  } catch (e) {
+    alert('清空失败：' + e.message);
     btn.textContent = original;
     btn.disabled = false;
   }

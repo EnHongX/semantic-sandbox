@@ -54,6 +54,8 @@ filter:
 	$(PYTHON) -m src.filter_search
 
 web:
+	@docker compose ps --status running 2>/dev/null | grep -q "running" || \
+		printf "\033[33m提示：数据库容器未运行，请先执行 make start\033[0m\n"
 	$(UVICORN) src.app:app --reload --port $(WEB_PORT)
 
 logs:

@@ -8,6 +8,12 @@
   <a href="/docs#/语义搜索/api_search_api_search_post" class="docs-link" target="_blank">查看 POST /api/search 文档 ↗</a>
 </h1>
 
+<div id="db-count-bar" style="font-size:13px;color:#94a3b8;margin-top:-12px;margin-bottom:14px"></div>
+
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
 <div class="card">
   <form method="post" action="/search">
     <div class="form-row">
@@ -22,19 +28,29 @@
         <input type="number" name="limit" id="limit"
                value="{{ limit or 5 }}" min="1" max="20">
       </div>
+      <div>
+        <label for="category">分类过滤</label>
+        <select name="category" id="category">
+          <option value="">全部分类</option>
+          <option value="technology" {% if category == 'technology' %}selected{% endif %}>Technology</option>
+          <option value="science"    {% if category == 'science'    %}selected{% endif %}>Science</option>
+          <option value="geography"  {% if category == 'geography'  %}selected{% endif %}>Geography</option>
+          <option value="history"    {% if category == 'history'    %}selected{% endif %}>History</option>
+          <option value="food"       {% if category == 'food'       %}selected{% endif %}>Food</option>
+          <option value="sports"     {% if category == 'sports'     %}selected{% endif %}>Sports</option>
+          <option value="art"        {% if category == 'art'        %}selected{% endif %}>Art</option>
+          <option value="nature"     {% if category == 'nature'     %}selected{% endif %}>Nature</option>
+        </select>
+      </div>
       <button type="submit" class="btn">搜索</button>
     </div>
   </form>
 </div>
 
-{% if error %}
-<div class="alert alert-error">{{ error }}</div>
-{% endif %}
-
 {% if results is defined and query %}
 <div class="card">
   <div style="font-size:13px;color:#94a3b8;margin-bottom:12px">
-    查询「{{ query }}」，返回 {{ results | length }} 条结果
+    查询「{{ query }}」{% if category %}（分类：{{ category }}）{% endif %}，返回 {{ results | length }} 条结果
   </div>
   {% if results %}
   <div class="result-list">
@@ -55,5 +71,16 @@
   {% endif %}
 </div>
 {% endif %}
+
+<script>
+fetch('/api/count').then(r => r.json()).then(d => {
+  const bar = document.getElementById('db-count-bar');
+  if (d.count === 0) {
+    bar.innerHTML = '向量库中暂无数据 — <a href="/ingest" style="color:#6366f1">去写入数据</a>';
+  } else {
+    bar.textContent = '当前库中共 ' + d.count + ' 条数据';
+  }
+}).catch(() => {});
+</script>
 
 {% endblock %}

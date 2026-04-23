@@ -10,20 +10,19 @@
 """
 from __future__ import annotations
 
-import csv
-import io
 import json
+import sys
+import time
 from pathlib import Path
 from typing import Annotated
 
 import weaviate
-from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from weaviate.classes.config import Configure, DataType, Property
-from weaviate.classes.data import DataObject
-from weaviate.classes.query import Filter, MetadataQuery
+from weaviate.classes.query import MetadataQuery
 from weaviate.util import generate_uuid5
 
 from .config import (
@@ -33,13 +32,46 @@ from .config import (
     WEAVIATE_HOST,
     WEAVIATE_HTTP_PORT,
 )
-from .embedder import embed, embedding_dim
+from .embedder import embed, embedding_dim, model_status
 
 # ─── 初始化 ────────────────────────────────────────────────────────────────────
 
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
 _TEMPLATES_DIR = _PROJECT_DIR / "templates"
-_USER_DATA_FILE = _PROJECT_DIR.parent / "data" / "user_data.json"
+_ROOT_DIR = _PROJECT_DIR.parent
+if str(_ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(_ROOT_DIR))
+
+from semantic_sandbox_common import (  # noqa: E402
+    add_documents,
+    append_error_log,
+    append_search_log,
+    available_categories,
+    build_documents_from_rows,
+    build_documents_from_texts,
+    clear_documents,
+    create_import_job,
+    delete_document,
+    delete_documents,
+    document_lookup,
+    document_matches_filters,
+    enrich_search_hits,
+    filter_payload,
+    get_document,
+    get_documents_by_ids,
+    import_job_failed_rows_path,
+    list_documents,
+    load_import_job,
+    load_documents,
+    normalize_search_filters,
+    parse_tags,
+    parse_upload_rows,
+    recent_errors,
+    summarize_import_errors,
+    update_document,
+)
+
+BACKEND = "weaviate"
 
 app = FastAPI(
     title="Weaviate Demo API",
@@ -65,6 +97,17 @@ def _fmt_exc(exc: Exception) -> str:
     return msg
 
 
+def _message_for_ingest(records: list[dict], existing: list[dict], failed: int = 0) -> str:
+    parts = [f"成功写入 {len(records)} 条" if records else "没有新数据"]
+    if existing:
+        parts.append(f"已存在 {len(existing)} 条")
+    if failed:
+        parts.append(f"失败 {failed} 条")
+    if records:
+        parts.append(f"自动分配 ID：{[r['id'] for r in records]}")
+    return "，".join(parts)
+
+
 def _connect() -> weaviate.WeaviateClient:
     return weaviate.connect_to_local(
         host=WEAVIATE_HOST,
@@ -74,15 +117,20 @@ def _connect() -> weaviate.WeaviateClient:
 
 
 def _ensure_collection(client: weaviate.WeaviateClient) -> None:
-    """集合不存在才建；已有集合直接复用，不删除已有数据。"""
     if client.collections.exists(COLLECTION_NAME):
         return
     client.collections.create(
         name=COLLECTION_NAME,
         properties=[
-            Property(name="doc_id",   data_type=DataType.INT),
-            Property(name="text",     data_type=DataType.TEXT),
+            Property(name="doc_id", data_type=DataType.INT),
+            Property(name="text", data_type=DataType.TEXT),
             Property(name="category", data_type=DataType.TEXT),
+            Property(name="document_id", data_type=DataType.TEXT),
+            Property(name="text_hash", data_type=DataType.TEXT),
+            Property(name="source", data_type=DataType.TEXT),
+            Property(name="tags", data_type=DataType.TEXT_ARRAY),
+            Property(name="created_at", data_type=DataType.DATE),
+            Property(name="updated_at", data_type=DataType.DATE),
         ],
         vectorizer_config=Configure.Vectorizer.none(),
         vector_index_config=Configure.VectorIndex.hnsw(
@@ -92,62 +140,144 @@ def _ensure_collection(client: weaviate.WeaviateClient) -> None:
 
 
 def _upsert_records(client: weaviate.WeaviateClient, records: list[dict]) -> int:
-    """返回实际写入成功的条数。"""
     texts = [r["text"] for r in records]
     vectors = embed(texts)
     collection = client.collections.get(COLLECTION_NAME)
-    objects = [
-        DataObject(
-            properties={"doc_id": r["id"], "text": r["text"], "category": r.get("category", "")},
-            uuid=generate_uuid5(str(r["id"])),
-            vector=vec,
-        )
-        for r, vec in zip(records, vectors)
-    ]
-    result = collection.data.insert_many(objects)
-    if result.has_errors:
-        msgs = "; ".join(e.message for e in result.errors.values())
-        raise RuntimeError(f"部分数据写入失败：{msgs}")
-    return len(objects)
-
-
-def _load_user_data() -> list[dict]:
-    if _USER_DATA_FILE.exists():
+    for record, vector in zip(records, vectors):
+        uuid = generate_uuid5(str(record["id"]))
         try:
-            return json.loads(_USER_DATA_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            return []
-    return []
+            collection.data.delete_by_id(uuid)
+        except Exception:
+            pass
+        collection.data.insert(
+            properties={
+                "doc_id": record["id"],
+                "text": record["text"],
+                "category": record.get("category", ""),
+                "document_id": record.get("document_id", ""),
+                "text_hash": record.get("text_hash", ""),
+                "source": record.get("source", ""),
+                "tags": record.get("tags", []),
+                "created_at": record.get("created_at"),
+                "updated_at": record.get("updated_at"),
+            },
+            uuid=uuid,
+            vector=vector,
+        )
+    return len(records)
 
 
-def _save_user_data(records: list[dict]) -> None:
-    _USER_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _USER_DATA_FILE.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+def _log_error(*, operation: str, surface: str, exc: Exception, **extra: object) -> None:
+    append_error_log({
+        "backend": BACKEND,
+        "operation": operation,
+        "surface": surface,
+        "error": str(exc),
+        **extra,
+    })
+
+
+def _parse_selected_ids(raw: str) -> list[int]:
+    values: list[int] = []
+    for item in str(raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            value = int(item)
+        except ValueError:
+            continue
+        if value > 0 and value not in values:
+            values.append(value)
+    return values
+
+
+def _search_candidate_limit(limit: int, filters: dict, doc_count: int) -> int:
+    requested = min(max(limit, 1), 20)
+    if not filter_payload(filters):
+        return requested
+    return min(max(requested * 15, 100), max(doc_count, requested), 500)
+
+
+def _search_results(client: weaviate.WeaviateClient, *, query: str, limit: int, filters: dict) -> list[dict]:
+    docs_by_id = document_lookup()
+    [vector] = embed([query])
+    collection = client.collections.get(COLLECTION_NAME)
+    res = collection.query.near_vector(
+        near_vector=vector,
+        limit=_search_candidate_limit(limit, filters, len(docs_by_id)),
+        return_metadata=MetadataQuery(distance=True),
     )
+    rows = []
+    for obj in res.objects:
+        distance = obj.metadata.distance if obj.metadata else None
+        score = round(1 - distance, 4) if distance is not None else 0.0
+        props = obj.properties or {}
+        rows.append({
+            "id": int(props.get("doc_id", 0)),
+            "text": props.get("text", ""),
+            "score": score,
+        })
+    filtered = [row for row in rows if document_matches_filters(docs_by_id.get(row["id"], {}), filters)]
+    return enrich_search_hits(query, filtered[: min(max(limit, 1), 20)], docs_by_id=docs_by_id)
 
 
-def _remove_from_user_data(record_id: int) -> None:
-    _save_user_data([r for r in _load_user_data() if r.get("id") != record_id])
+def _health_snapshot() -> dict:
+    db_state = {"ok": False, "detail": "", "collection": COLLECTION_NAME}
+    vector_count = 0
+    client = _connect()
+    try:
+        ready = client.is_ready()
+        if ready:
+            db_state["ok"] = True
+            db_state["detail"] = "Weaviate 连接正常"
+            if client.collections.exists(COLLECTION_NAME):
+                collection = client.collections.get(COLLECTION_NAME)
+                result = collection.aggregate.over_all(total_count=True)
+                vector_count = result.total_count or 0
+        else:
+            db_state["detail"] = "Weaviate 未就绪，请稍后重试"
+    except Exception as exc:
+        db_state["detail"] = _fmt_exc(exc)
+    finally:
+        client.close()
+
+    errors = [item for item in recent_errors(limit=20) if item.get("backend") == BACKEND][:8]
+    return {
+        "backend": BACKEND,
+        "db": db_state,
+        "model": model_status(),
+        "metadata_count": len(load_documents()),
+        "vector_count": vector_count,
+        "recent_errors": errors,
+        "category_options": available_categories(),
+    }
 
 
-def _next_id() -> int:
-    ids: list[int] = []
-    for f in [DATA_FILE, _USER_DATA_FILE]:
-        if f.exists():
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                ids.extend(int(r.get("id", 0)) for r in data if isinstance(r.get("id"), int))
-            except (json.JSONDecodeError, ValueError):
-                pass
-    return max(ids, default=0) + 1
-
-
-def _parse_upload(content: bytes, filename: str) -> list[dict]:
-    if filename.endswith(".csv"):
-        reader = csv.DictReader(io.StringIO(content.decode("utf-8")))
-        return list(reader)
-    return json.loads(content.decode("utf-8"))
+def _render_documents_page(
+    request: Request,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    message: str | None = None,
+    error: str | None = None,
+):
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    docs, total = list_documents(offset=(page - 1) * page_size, limit=page_size)
+    return templates.TemplateResponse(
+        "documents.html",
+        {
+            "request": request,
+            "documents": docs,
+            "total": total,
+            "model": model_status(),
+            "page": page,
+            "page_size": page_size,
+            "message": message,
+            "error": error,
+        },
+    )
 
 
 # ─── Pydantic 模型 ─────────────────────────────────────────────────────────────
@@ -156,6 +286,9 @@ class IngestRequest(BaseModel):
     """写入请求体。texts 中每个字符串都会被独立向量化后写入向量库。"""
 
     texts: list[str]
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    source: str = "api"
 
     model_config = {
         "json_schema_extra": {
@@ -167,18 +300,36 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     inserted: int
     ids: list[int]
+    skipped: int = 0
+    existing_count: int = 0
+    existing: list[dict] = Field(default_factory=list)
+    failed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    job_id: str | None = None
+    status: str | None = None
+    failed_rows_download_url: str | None = None
 
 
 class SearchRequest(BaseModel):
-    """搜索请求体。query 是查询文本，limit 控制返回条数（默认 5，最大 20），category 可选分类过滤。"""
+    """搜索请求体。支持多分类、标签和创建时间范围过滤。"""
 
     query: str
     limit: int = 5
     category: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_at_from: str | None = None
+    created_at_to: str | None = None
 
     model_config = {
         "json_schema_extra": {
-            "example": {"query": "法国著名地标", "limit": 5, "category": "geography"}
+            "example": {
+                "query": "法国著名地标",
+                "limit": 5,
+                "categories": ["geography", "history"],
+                "tags": ["travel"],
+                "created_at_from": "2026-04-01T00:00:00+00:00",
+            }
         }
     }
 
@@ -187,11 +338,31 @@ class SearchResult(BaseModel):
     id: int
     text: str
     score: float
+    snippet: str = ""
+    matched_terms: list[str] = Field(default_factory=list)
+    score_explanation: str = ""
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    source: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class SearchResponse(BaseModel):
     query: str
+    filter: dict = Field(default_factory=dict)
     results: list[SearchResult]
+
+
+class DocumentUpdate(BaseModel):
+    text: str
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    source: str = "api"
+
+
+class BatchDocumentRequest(BaseModel):
+    record_ids: list[int] = Field(default_factory=list)
 
 
 # ─── 健康检查 ─────────────────────────────────────────────────────────────────
@@ -200,13 +371,12 @@ class SearchResponse(BaseModel):
 async def health():
     client = _connect()
     try:
-        ready = client.is_ready()
-        if not ready:
-            from fastapi import HTTPException
+        if not client.is_ready():
             raise HTTPException(status_code=503, detail="Weaviate 未就绪，请稍后重试")
         return {"status": "ok", "db": "weaviate"}
     except Exception as exc:
-        from fastapi import HTTPException
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(status_code=503, detail=_fmt_exc(exc))
     finally:
         client.close()
@@ -220,27 +390,38 @@ async def health():
     summary="写入文本到向量库",
     description=(
         "将 `texts` 列表中的每条文本向量化后写入 Weaviate，并追加保存到 `data/user_data.json`。\n\n"
-        "ID 自动从现有数据的最大 id + 1 开始递增。每条记录用 `generate_uuid5(str(id))` 生成稳定 UUID，重复提交不会产生重复数据。"
+        "ID 自动从现有数据的最大 id + 1 开始递增；重复文本会跳过并计入 `skipped`。"
     ),
     tags=["数据写入"],
 )
 async def api_ingest(req: IngestRequest) -> IngestResponse:
+    new_records, existing = build_documents_from_texts(
+        req.texts,
+        seed_files=[DATA_FILE],
+        source=req.source,
+        category=req.category,
+        tags=req.tags,
+    )
+    if not new_records:
+        return IngestResponse(
+            inserted=0,
+            ids=[],
+            skipped=len(existing),
+            existing_count=len(existing),
+            existing=existing,
+        )
     client = _connect()
     try:
         _ensure_collection(client)
-        start_id = _next_id()
-        new_records = [
-            {"id": start_id + i, "text": t.strip()}
-            for i, t in enumerate(req.texts)
-            if t.strip()
-        ]
-        if not new_records:
-            return IngestResponse(inserted=0, ids=[])
         _upsert_records(client, new_records)
-        existing = _load_user_data()
-        existing.extend(new_records)
-        _save_user_data(existing)
-        return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
+        add_documents(new_records)
+        return IngestResponse(
+            inserted=len(new_records),
+            ids=[r["id"] for r in new_records],
+            skipped=len(existing),
+            existing_count=len(existing),
+            existing=existing,
+        )
     finally:
         client.close()
 
@@ -249,31 +430,47 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     "/api/upload",
     response_model=IngestResponse,
     summary="上传文件批量写入向量库",
-    description="上传 JSON（`[{\"text\":\"...\"}]`）或 CSV（首行含 `text` 列）文件，批量向量化写入 Weaviate。",
+    description="上传 JSON（`[{\"text\":\"...\"}]`）或 CSV（首行含 `text` 列）文件，批量向量化写入 Weaviate；重复文本会跳过。",
     tags=["数据写入"],
 )
 async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
-    from fastapi import HTTPException
     content = await file.read()
     try:
-        records_raw = _parse_upload(content, file.filename or "")
+        records_raw = parse_upload_rows(content, file.filename or "")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"文件解析失败：{exc}")
-    texts = [str(r.get("text", "")).strip() for r in records_raw if str(r.get("text", "")).strip()]
-    if not texts:
-        raise HTTPException(status_code=400, detail="文件中没有找到有效的 text 字段")
-    client = _connect()
-    try:
-        _ensure_collection(client)
-        start_id = _next_id()
-        new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(texts)]
-        _upsert_records(client, new_records)
-        existing = _load_user_data()
-        existing.extend(new_records)
-        _save_user_data(existing)
-        return IngestResponse(inserted=len(new_records), ids=[r["id"] for r in new_records])
-    finally:
-        client.close()
+    new_records, existing, error_details = build_documents_from_rows(
+        records_raw,
+        seed_files=[DATA_FILE],
+        default_source="upload",
+    )
+    errors = summarize_import_errors(error_details)
+    if new_records:
+        client = _connect()
+        try:
+            _ensure_collection(client)
+            _upsert_records(client, new_records)
+            add_documents(new_records)
+        finally:
+            client.close()
+    job = create_import_job(
+        source_filename=file.filename or "",
+        inserted=len(new_records),
+        existing=existing,
+        errors=error_details,
+    )
+    return IngestResponse(
+        inserted=len(new_records),
+        ids=[r["id"] for r in new_records],
+        skipped=len(existing),
+        existing_count=len(existing),
+        existing=existing,
+        failed=len(errors),
+        errors=errors,
+        job_id=job["job_id"],
+        status=job["status"],
+        failed_rows_download_url=job.get("failed_rows_download_url"),
+    )
 
 
 @app.post(
@@ -281,34 +478,46 @@ async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
     response_model=SearchResponse,
     summary="语义搜索",
     description=(
-        "将 `query` 向量化后在 Weaviate 里做近邻检索，返回最相近的 `limit` 条结果。\n\n"
-        "`score` 为余弦相似度（= 1 − cosine distance），范围 0 ~ 1，越接近 1 越相似。`category` 可选，传入时只在该分类内检索。"
+        "将 `query` 向量化后在 Weaviate 里做近邻检索，并支持多分类、标签、时间范围过滤。\n\n"
+        "`score` 为余弦相似度（= 1 - cosine distance），越接近 1 越相似；返回值包含匹配片段、高亮词和 score 解释。"
     ),
     tags=["语义搜索"],
 )
 async def api_search(req: SearchRequest) -> SearchResponse:
     client = _connect()
+    started = time.perf_counter()
+    filters = normalize_search_filters(
+        category=req.category,
+        categories=req.categories,
+        tags=req.tags,
+        created_at_from=req.created_at_from,
+        created_at_to=req.created_at_to,
+    )
     try:
-        [vector] = embed([req.query])
-        collection = client.collections.get(COLLECTION_NAME)
-        filters = Filter.by_property("category").equal(req.category) if req.category else None
-        res = collection.query.near_vector(
-            near_vector=vector,
-            limit=min(req.limit, 20),
-            return_metadata=MetadataQuery(distance=True),
-            filters=filters,
-        )
-        results = []
-        for obj in res.objects:
-            distance = obj.metadata.distance if obj.metadata else None
-            score = round(1 - distance, 4) if distance is not None else 0.0
-            props = obj.properties or {}
-            results.append(SearchResult(
-                id=int(props.get("doc_id", 0)),
-                text=props.get("text", ""),
-                score=score,
-            ))
-        return SearchResponse(query=req.query, results=results)
+        results = [SearchResult(**item) for item in _search_results(client, query=req.query, limit=req.limit, filters=filters)]
+        append_search_log({
+            "backend": BACKEND,
+            "query": req.query,
+            "limit": min(req.limit, 20),
+            "category": ",".join(filters["categories"]),
+            "filter": filter_payload(filters),
+            "result_count": len(results),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+        })
+        return SearchResponse(query=req.query, filter=filter_payload(filters), results=results)
+    except Exception as exc:
+        append_search_log({
+            "backend": BACKEND,
+            "query": req.query,
+            "limit": min(req.limit, 20),
+            "category": ",".join(filters["categories"]),
+            "filter": filter_payload(filters),
+            "result_count": 0,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "error": str(exc),
+        })
+        _log_error(operation="search", surface="api", exc=exc, query=req.query, filter=filter_payload(filters))
+        raise
     finally:
         client.close()
 
@@ -342,7 +551,7 @@ async def api_delete_record(record_id: int) -> dict:
     try:
         collection = client.collections.get(COLLECTION_NAME)
         collection.data.delete_by_id(generate_uuid5(str(record_id)))
-        _remove_from_user_data(record_id)
+        delete_document(record_id)
         return {"deleted": record_id}
     finally:
         client.close()
@@ -358,10 +567,131 @@ async def api_clear_records() -> dict:
     try:
         client.collections.delete(COLLECTION_NAME)
         _ensure_collection(client)
-        _save_user_data([])
+        clear_documents()
         return {"cleared": True}
     finally:
         client.close()
+
+
+@app.get("/api/documents", summary="分页查看文档元数据", tags=["文档管理"])
+async def api_documents(offset: int = 0, limit: int = 50) -> dict:
+    docs, total = list_documents(offset=max(offset, 0), limit=min(max(limit, 1), 200))
+    return {"total": total, "offset": offset, "limit": limit, "items": docs}
+
+
+@app.get("/api/documents/{record_id}", summary="查看单条文档", tags=["文档管理"])
+async def api_document_detail(record_id: int) -> dict:
+    doc = get_document(record_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return doc
+
+
+@app.put("/api/documents/{record_id}", summary="更新文档并重建向量", tags=["文档管理"])
+async def api_update_document(record_id: int, req: DocumentUpdate) -> dict:
+    client = _connect()
+    try:
+        _ensure_collection(client)
+        try:
+            doc = update_document(record_id, req.model_dump())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _upsert_records(client, [doc])
+        return doc
+    finally:
+        client.close()
+
+
+@app.delete("/api/documents/{record_id}", summary="删除文档和向量", tags=["文档管理"])
+async def api_delete_document(record_id: int) -> dict:
+    return await api_delete_record(record_id)
+
+
+@app.post("/api/documents/batch-delete", summary="批量删除文档和向量", tags=["文档管理"])
+async def api_batch_delete_documents(req: BatchDocumentRequest) -> dict:
+    record_ids = sorted({int(item) for item in req.record_ids if int(item) > 0})
+    if not record_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一条文档")
+    client = _connect()
+    try:
+        collection = client.collections.get(COLLECTION_NAME)
+        for record_id in record_ids:
+            collection.data.delete_by_id(generate_uuid5(str(record_id)))
+        deleted = delete_documents(record_ids)
+        return {"requested": len(record_ids), "deleted": deleted, "record_ids": record_ids}
+    finally:
+        client.close()
+
+
+@app.post("/api/documents/batch-reindex", summary="批量重建所选文档的向量", tags=["文档管理"])
+async def api_batch_reindex_documents(req: BatchDocumentRequest) -> dict:
+    record_ids = sorted({int(item) for item in req.record_ids if int(item) > 0})
+    if not record_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一条文档")
+    docs = get_documents_by_ids(record_ids)
+    if not docs:
+        raise HTTPException(status_code=404, detail="未找到所选文档")
+    client = _connect()
+    try:
+        _ensure_collection(client)
+        _upsert_records(client, docs)
+        return {"requested": len(record_ids), "reindexed": len(docs), "record_ids": [int(doc["id"]) for doc in docs]}
+    finally:
+        client.close()
+
+
+def _reindex_all(client: weaviate.WeaviateClient) -> int:
+    docs = load_documents()
+    if client.collections.exists(COLLECTION_NAME):
+        client.collections.delete(COLLECTION_NAME)
+    _ensure_collection(client)
+    if docs:
+        _upsert_records(client, docs)
+    return len(docs)
+
+
+@app.post("/api/reindex", summary="按 documents.json 重建当前向量库集合", tags=["文档管理"])
+async def api_reindex() -> dict:
+    client = _connect()
+    try:
+        indexed = _reindex_all(client)
+        return {"indexed": indexed, "collection": COLLECTION_NAME}
+    finally:
+        client.close()
+
+
+@app.get("/api/model/status", summary="查看当前嵌入模型状态", tags=["模型"])
+async def api_model_status() -> dict:
+    return model_status()
+
+
+@app.get("/model/status", summary="兼容旧路径的模型状态接口", tags=["模型"])
+async def model_status_alias() -> dict:
+    return model_status()
+
+
+@app.get("/api/health/panel", summary="查看健康面板数据", tags=["模型"])
+async def api_health_panel() -> dict:
+    return _health_snapshot()
+
+
+@app.get("/api/import-jobs/{job_id}", summary="查看批量导入任务状态", tags=["数据写入"])
+async def api_import_job_status(job_id: str) -> dict:
+    job = load_import_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return job
+
+
+@app.get("/api/import-jobs/{job_id}/failed-rows", summary="下载批量导入失败行", tags=["数据写入"])
+async def api_import_job_failed_rows(job_id: str):
+    job = load_import_job(job_id)
+    path = import_job_failed_rows_path(job_id)
+    if job is None or not path.exists():
+        raise HTTPException(status_code=404, detail="失败行文件不存在")
+    return FileResponse(path=path, media_type="text/csv", filename=f"{job_id}-failed-rows.csv")
 
 
 # ─── 示例数据接口 ──────────────────────────────────────────────────────────────
@@ -380,7 +710,6 @@ _SAMPLE_FILES = {
 )
 async def api_samples(lang: str) -> dict:
     if lang not in _SAMPLE_FILES:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"lang 只支持 en 或 zh，收到 {lang!r}")
     data = json.loads(_SAMPLE_FILES[lang].read_text(encoding="utf-8"))
     return {"lang": lang, "texts": [r["text"] for r in data]}
@@ -390,7 +719,18 @@ async def api_samples(lang: str) -> dict:
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def search_page(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "category_options": available_categories(),
+            "selected_categories": [],
+            "tags_text": "",
+            "created_at_from": "",
+            "created_at_to": "",
+            "active_filter": {},
+        },
+    )
 
 
 @app.post("/search", response_class=HTMLResponse, include_in_schema=False)
@@ -398,32 +738,63 @@ async def search_form(
     request: Request,
     query: Annotated[str, Form()],
     limit: Annotated[int, Form()] = 5,
-    category: Annotated[str, Form()] = "",
+    categories: Annotated[list[str], Form()] = [],
+    tags: Annotated[str, Form()] = "",
+    created_at_from: Annotated[str, Form()] = "",
+    created_at_to: Annotated[str, Form()] = "",
 ):
     results, error = [], None
     client = _connect()
+    started = time.perf_counter()
+    filters = normalize_search_filters(
+        categories=categories,
+        tags=parse_tags(tags),
+        created_at_from=created_at_from,
+        created_at_to=created_at_to,
+    )
     try:
-        [vector] = embed([query])
-        collection = client.collections.get(COLLECTION_NAME)
-        filters = Filter.by_property("category").equal(category) if category else None
-        res = collection.query.near_vector(
-            near_vector=vector,
-            limit=min(limit, 20),
-            return_metadata=MetadataQuery(distance=True),
-            filters=filters,
-        )
-        for obj in res.objects:
-            distance = obj.metadata.distance if obj.metadata else None
-            score = round(1 - distance, 4) if distance is not None else 0.0
-            props = obj.properties or {}
-            results.append({"id": int(props.get("doc_id", 0)), "text": props.get("text", ""), "score": score})
+        results = _search_results(client, query=query, limit=limit, filters=filters)
+        append_search_log({
+            "backend": BACKEND,
+            "query": query,
+            "limit": min(limit, 20),
+            "category": ",".join(filters["categories"]),
+            "filter": filter_payload(filters),
+            "result_count": len(results),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "surface": "web",
+        })
     except Exception as exc:
         error = _fmt_exc(exc)
+        append_search_log({
+            "backend": BACKEND,
+            "query": query,
+            "limit": min(limit, 20),
+            "category": ",".join(filters["categories"]),
+            "filter": filter_payload(filters),
+            "result_count": 0,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "surface": "web",
+            "error": str(exc),
+        })
+        _log_error(operation="search", surface="web", exc=exc, query=query, filter=filter_payload(filters))
     finally:
         client.close()
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "query": query, "limit": limit, "category": category, "results": results, "error": error},
+        {
+            "request": request,
+            "query": query,
+            "limit": limit,
+            "results": results,
+            "error": error,
+            "category_options": available_categories(),
+            "selected_categories": filters["categories"],
+            "tags_text": ",".join(filters["tags"]),
+            "created_at_from": filters["created_at_from"],
+            "created_at_to": filters["created_at_to"],
+            "active_filter": filter_payload(filters),
+        },
     )
 
 
@@ -432,31 +803,174 @@ async def ingest_page(request: Request):
     return templates.TemplateResponse("ingest.html", {"request": request})
 
 
+@app.get("/documents", response_class=HTMLResponse, include_in_schema=False)
+async def documents_page(request: Request, page: int = 1, page_size: int = 50):
+    return _render_documents_page(request, page=page, page_size=page_size)
+
+
+@app.get("/health/panel", response_class=HTMLResponse, include_in_schema=False)
+async def health_panel_page(request: Request):
+    return templates.TemplateResponse(
+        "health.html",
+        {
+            "request": request,
+            "health": _health_snapshot(),
+        },
+    )
+
+
+@app.post("/documents/{record_id}/update", response_class=HTMLResponse, include_in_schema=False)
+async def update_document_form(
+    request: Request,
+    record_id: int,
+    text: Annotated[str, Form()],
+    category: Annotated[str, Form()] = "",
+    tags: Annotated[str, Form()] = "",
+    source: Annotated[str, Form()] = "web",
+    page: Annotated[int, Form()] = 1,
+    page_size: Annotated[int, Form()] = 50,
+):
+    message, error = None, None
+    client = _connect()
+    try:
+        _ensure_collection(client)
+        doc = update_document(record_id, {
+            "text": text,
+            "category": category,
+            "tags": parse_tags(tags),
+            "source": source,
+        })
+        _upsert_records(client, [doc])
+        message = f"已更新文档 {record_id} 并重建向量"
+    except Exception as exc:
+        error = _fmt_exc(exc)
+        _log_error(operation="update_document", surface="web", exc=exc, record_id=record_id)
+    finally:
+        client.close()
+    return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+
+
+@app.post("/documents/{record_id}/delete", response_class=HTMLResponse, include_in_schema=False)
+async def delete_document_form(
+    request: Request,
+    record_id: int,
+    page: Annotated[int, Form()] = 1,
+    page_size: Annotated[int, Form()] = 50,
+):
+    message, error = None, None
+    client = _connect()
+    try:
+        collection = client.collections.get(COLLECTION_NAME)
+        collection.data.delete_by_id(generate_uuid5(str(record_id)))
+        delete_document(record_id)
+        message = f"已删除文档 {record_id}"
+    except Exception as exc:
+        error = _fmt_exc(exc)
+        _log_error(operation="delete_document", surface="web", exc=exc, record_id=record_id)
+    finally:
+        client.close()
+    return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+
+
+@app.post("/documents/reindex", response_class=HTMLResponse, include_in_schema=False)
+async def reindex_form(
+    request: Request,
+    page: Annotated[int, Form()] = 1,
+    page_size: Annotated[int, Form()] = 50,
+):
+    message, error = None, None
+    client = _connect()
+    try:
+        indexed = _reindex_all(client)
+        message = f"已重建集合 {COLLECTION_NAME}，写入 {indexed} 条文档"
+    except Exception as exc:
+        error = _fmt_exc(exc)
+        _log_error(operation="reindex_all", surface="web", exc=exc)
+    finally:
+        client.close()
+    return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+
+
+@app.post("/documents/batch-delete", response_class=HTMLResponse, include_in_schema=False)
+async def batch_delete_documents_form(
+    request: Request,
+    selected_ids: Annotated[str, Form()],
+    page: Annotated[int, Form()] = 1,
+    page_size: Annotated[int, Form()] = 50,
+):
+    record_ids = _parse_selected_ids(selected_ids)
+    message, error = None, None
+    if not record_ids:
+        error = "请至少选择一条文档"
+        return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+    client = _connect()
+    try:
+        collection = client.collections.get(COLLECTION_NAME)
+        for record_id in record_ids:
+            collection.data.delete_by_id(generate_uuid5(str(record_id)))
+        deleted = delete_documents(record_ids)
+        message = f"已批量删除 {deleted} 条文档"
+    except Exception as exc:
+        error = _fmt_exc(exc)
+        _log_error(operation="batch_delete", surface="web", exc=exc, record_ids=record_ids)
+    finally:
+        client.close()
+    return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+
+
+@app.post("/documents/batch-reindex", response_class=HTMLResponse, include_in_schema=False)
+async def batch_reindex_documents_form(
+    request: Request,
+    selected_ids: Annotated[str, Form()],
+    page: Annotated[int, Form()] = 1,
+    page_size: Annotated[int, Form()] = 50,
+):
+    record_ids = _parse_selected_ids(selected_ids)
+    message, error = None, None
+    if not record_ids:
+        error = "请至少选择一条文档"
+        return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+    docs = get_documents_by_ids(record_ids)
+    if not docs:
+        error = "未找到所选文档"
+        return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+    client = _connect()
+    try:
+        _ensure_collection(client)
+        _upsert_records(client, docs)
+        message = f"已批量重建 {len(docs)} 条文档向量"
+    except Exception as exc:
+        error = _fmt_exc(exc)
+        _log_error(operation="batch_reindex", surface="web", exc=exc, record_ids=record_ids)
+    finally:
+        client.close()
+    return _render_documents_page(request, page=page, page_size=page_size, message=message, error=error)
+
+
 @app.post("/ingest", response_class=HTMLResponse, include_in_schema=False)
 async def ingest_form(
     request: Request,
     texts: Annotated[str, Form()],
 ):
     message, error = None, None
-    client = _connect()
     try:
         lines = [t.strip() for t in texts.strip().splitlines() if t.strip()]
         if not lines:
             error = "请至少输入一行文本"
         else:
-            _ensure_collection(client)
-            start_id = _next_id()
-            new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(lines)]
-            _upsert_records(client, new_records)
-            existing = _load_user_data()
-            existing.extend(new_records)
-            _save_user_data(existing)
-            ids = [r["id"] for r in new_records]
-            message = f"成功写入 {len(new_records)} 条，自动分配 ID：{ids}"
+            new_records, existing = build_documents_from_texts(lines, seed_files=[DATA_FILE], source="web")
+            if new_records:
+                client = _connect()
+                try:
+                    _ensure_collection(client)
+                    _upsert_records(client, new_records)
+                    add_documents(new_records)
+                finally:
+                    client.close()
+            message = _message_for_ingest(new_records, existing)
     except Exception as exc:
         error = _fmt_exc(exc)
-    finally:
-        client.close()
+        _log_error(operation="ingest", surface="web", exc=exc)
     return templates.TemplateResponse(
         "ingest.html",
         {"request": request, "texts": texts if error else "", "message": message, "error": error},
@@ -465,27 +979,35 @@ async def ingest_form(
 
 @app.post("/ingest/upload", response_class=HTMLResponse, include_in_schema=False)
 async def upload_form(request: Request, file: UploadFile = File(...)):
-    message, error = None, None
-    client = _connect()
+    message, error, import_status = None, None, None
     try:
         content = await file.read()
-        records_raw = _parse_upload(content, file.filename or "")
-        texts = [str(r.get("text", "")).strip() for r in records_raw if str(r.get("text", "")).strip()]
-        if not texts:
-            raise ValueError("文件中没有找到有效的 text 字段")
-        _ensure_collection(client)
-        start_id = _next_id()
-        new_records = [{"id": start_id + i, "text": t} for i, t in enumerate(texts)]
-        _upsert_records(client, new_records)
-        existing = _load_user_data()
-        existing.extend(new_records)
-        _save_user_data(existing)
-        message = f"成功写入 {len(new_records)} 条，自动分配 ID：{[r['id'] for r in new_records]}"
+        records_raw = parse_upload_rows(content, file.filename or "")
+        new_records, existing, error_details = build_documents_from_rows(
+            records_raw,
+            seed_files=[DATA_FILE],
+            default_source="upload",
+        )
+        errors = summarize_import_errors(error_details)
+        if new_records:
+            client = _connect()
+            try:
+                _ensure_collection(client)
+                _upsert_records(client, new_records)
+                add_documents(new_records)
+            finally:
+                client.close()
+        import_status = create_import_job(
+            source_filename=file.filename or "",
+            inserted=len(new_records),
+            existing=existing,
+            errors=error_details,
+        )
+        message = _message_for_ingest(new_records, existing, failed=len(errors))
     except Exception as exc:
         error = _fmt_exc(exc)
-    finally:
-        client.close()
+        _log_error(operation="upload", surface="web", exc=exc, filename=file.filename or "")
     return templates.TemplateResponse(
         "ingest.html",
-        {"request": request, "message": message, "error": error},
+        {"request": request, "message": message, "error": error, "import_status": import_status},
     )

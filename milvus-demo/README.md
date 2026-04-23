@@ -105,7 +105,7 @@ pip install -r requirements.txt
 
 > ⚠️ 首次安装会顺带拉 PyTorch（`sentence-transformers` 的依赖），约 **1-2GB**，需要几分钟。
 >
-> 🇨🇳 国内 HuggingFace 下载慢可以先 `export HF_ENDPOINT=https://hf-mirror.com`。
+> 🇨🇳 国内 HuggingFace 下载慢可以先 `export HF_ENDPOINT=https://hf-mirror.com`，再到项目根目录跑 `python scripts/preload_model.py`。
 
 ### 3. 配置环境变量
 
@@ -119,6 +119,14 @@ EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
 DATA_FILE=../data/sample_zh.json
 ```
 
+模型需要先在项目根目录下载：
+
+```bash
+(cd .. && python scripts/preload_model.py)
+```
+
+脚本从 HuggingFace Hub（或 `HF_ENDPOINT` 指定的镜像）下载 `sentence-transformers/all-MiniLM-L6-v2` 和 `BAAI/bge-small-zh-v1.5`，统一放到项目根目录 `models/`。服务默认 `EMBEDDING_LOCAL_ONLY=1`，运行时只读本地 `models/`，不会再访问 HuggingFace。
+
 ### 4. 入库
 
 ```bash
@@ -128,7 +136,7 @@ python -m src.ingest
 预期输出：
 ```
 [ingest] 读取数据: .../data/sample_en.json
-[embedder] 加载模型: sentence-transformers/all-MiniLM-L6-v2
+[embedder] 加载模型: .../models/...
 [ingest] 连接 Milvus http://localhost:19530 / 向量维度=384
 [ingest] 创建集合 sandbox_docs (维度=384, 距离=COSINE)
 [ingest] 写入 10 条 → sandbox_docs
@@ -353,8 +361,10 @@ uvicorn src.app:app --reload --port 8890
 
 | 地址 | 用途 |
 |---|---|
-| <http://localhost:8890> | 搜索页面 |
-| <http://localhost:8890/ingest> | 写入页面 |
+| <http://localhost:8890> | 搜索页面（多分类 / 标签 / 时间范围过滤，展示片段、高亮和 score 解释） |
+| <http://localhost:8890/ingest> | 写入页面（逐行写入、JSON/CSV 上传、拖拽上传、导入状态统计） |
+| <http://localhost:8890/documents> | 文档管理页（分页查看、单条编辑、批量删除、批量重建） |
+| <http://localhost:8890/health/panel> | 健康面板（DB / 模型 / 记录数 / 最近错误） |
 | <http://localhost:8890/docs> | Swagger API 文档 |
 
 ---
@@ -378,8 +388,29 @@ uvicorn src.app:app --reload --port 8890
 **响应体**：
 
 ```json
-{"inserted": 2, "ids": [11, 12]}
+{
+  "inserted": 2,
+  "ids": [11, 12],
+  "skipped": 1,
+  "existing_count": 1,
+  "existing": [
+    {
+      "id": 3,
+      "document_id": "doc_xxx",
+      "text_hash": "sha256...",
+      "reason": "text_hash"
+    }
+  ]
+}
 ```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `inserted` | `int` | 实际写入条数 |
+| `ids` | `int[]` | 写入记录自动分配的 ID 列表 |
+| `skipped` | `int` | 因 `document_id` / `text_hash` 重复被跳过的条数 |
+| `existing_count` | `int` | 已存在记录数，等于 `skipped` |
+| `existing` | `object[]` | 已存在记录明细，包含命中的 `id`、`document_id`、`text_hash` 和原因 |
 
 **curl 示例**：
 
@@ -389,7 +420,23 @@ curl -X POST http://localhost:8890/api/ingest \
   -d '{"texts": ["巴黎是法国的首都", "向量数据库用于语义检索"]}'
 ```
 
-> Web/API 写入只接收文本并自动分配 ID；如果需要保留 `category` 等元数据，请使用命令行 `python -m src.ingest your.json`。
+> Web/API 写入支持 `category`、`tags`、`source`；会按 `document_id` / 规范化文本生成的 `text_hash` 做幂等判断。重复提交不会再次入库，而是返回已存在记录明细。
+
+#### POST `/api/upload` — 上传 JSON / CSV 批量写入
+
+Web 写入页支持按钮选择和拖拽上传两种入口，最终都走同一条上传链路。选择或拖拽文件后页面会显示文件名和大小，提交前可确认。
+
+支持字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `text` | 是 | 文本内容 |
+| `document_id` | 否 | 业务侧稳定文档 ID |
+| `category` | 否 | 分类 |
+| `tags` | 否 | 标签 |
+| `source` | 否 | 来源 |
+
+响应除了 `inserted / ids / skipped`，还会返回 `existing_count`、`existing`、`failed`、`errors`、`job_id`、`status` 和 `failed_rows_download_url`。
 
 ---
 
@@ -401,7 +448,10 @@ curl -X POST http://localhost:8890/api/ingest \
 {
   "query": "法国著名地标",
   "limit": 5,
-  "category": "geography"
+  "categories": ["geography"],
+  "tags": ["travel"],
+  "created_at_from": "2026-04-20T00:00:00+00:00",
+  "created_at_to": "2026-04-22T23:59:59+00:00"
 }
 ```
 
@@ -409,15 +459,35 @@ curl -X POST http://localhost:8890/api/ingest \
 |---|---|---|---|---|
 | `query` | `string` | 是 | — | 查询文本 |
 | `limit` | `int` | 否 | `5` | 返回条数，最大 20 |
-| `category` | `string` | 否 | `null` | 可选分类过滤 |
+| `category` | `string` | 否 | `null` | 兼容旧字段，会并入 `categories` |
+| `categories` | `string[]` | 否 | `[]` | 可选多分类过滤 |
+| `tags` | `string[]` | 否 | `[]` | 可选标签过滤，命中任一标签即返回 |
+| `created_at_from` | `string` | 否 | `null` | 可选创建时间起点 |
+| `created_at_to` | `string` | 否 | `null` | 可选创建时间终点 |
 
 **响应体**：
 
 ```json
 {
   "query": "法国著名地标",
+  "filter": {
+    "categories": ["geography"],
+    "tags": ["travel"]
+  },
   "results": [
-    {"id": 1, "text": "The Eiffel Tower is ...", "score": 0.7432}
+    {
+      "id": 1,
+      "text": "The Eiffel Tower is ...",
+      "score": 0.7432,
+      "snippet": "...Eiffel Tower is a wrought-iron lattice tower...",
+      "matched_terms": ["tower", "france"],
+      "score_explanation": "相关性较强，score=0.7432，越接近 1 越相似。",
+      "category": "geography",
+      "tags": ["travel"],
+      "source": "api",
+      "created_at": "2026-04-22T10:00:00+00:00",
+      "updated_at": "2026-04-22T10:00:00+00:00"
+    }
   ]
 }
 ```
@@ -431,7 +501,7 @@ curl -X POST http://localhost:8890/api/ingest \
 ```bash
 curl -X POST http://localhost:8890/api/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "法国著名地标", "limit": 3, "category": "geography"}'
+  -d '{"query": "法国著名地标", "limit": 3, "categories": ["geography"], "tags": ["travel"]}'
 ```
 
 ---
@@ -440,11 +510,24 @@ curl -X POST http://localhost:8890/api/search \
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `POST` | `/api/upload` | 上传 JSON/CSV 批量写入，只读取 `text` 字段 |
+| `POST` | `/api/upload` | 上传 JSON/CSV 批量写入，支持 `text/document_id/category/tags/source` |
 | `GET` | `/api/count` | 查询当前集合记录数 |
 | `DELETE` | `/api/record/{record_id}` | 删除指定 ID 的记录 |
 | `DELETE` | `/api/records` | 清空集合并清空 `data/user_data.json` |
 | `GET` | `/api/samples/{lang}` | 返回 `en` 或 `zh` 示例文本 |
+| `GET` | `/api/documents` | 分页查看文档元数据 |
+| `GET` | `/api/documents/{record_id}` | 查看单条文档 |
+| `PUT` | `/api/documents/{record_id}` | 更新文档并自动重建向量 |
+| `DELETE` | `/api/documents/{record_id}` | 删除文档和向量 |
+| `POST` | `/api/documents/batch-delete` | 批量删除所选文档和向量 |
+| `POST` | `/api/documents/batch-reindex` | 批量重建所选文档向量 |
+| `POST` | `/api/reindex` | 按 `data/documents.json` 重建当前向量集合 |
+| `GET` | `/api/model/status` / `/model/status` | 查看模型状态 |
+| `GET` | `/api/health/panel` | 查看 DB / 模型 / 记录数 / 最近错误 |
+| `GET` | `/api/import-jobs/{job_id}` | 查看导入任务状态 |
+| `GET` | `/api/import-jobs/{job_id}/failed-rows` | 下载失败行 CSV |
+
+搜索审计日志会写入 `../data/search_logs.jsonl`；应用层错误会写入 `../data/app_errors.jsonl`，健康面板直接读取最近错误摘要。
 
 ---
 
@@ -453,6 +536,7 @@ curl -X POST http://localhost:8890/api/search \
 写入数据双重保存：
 1. **Milvus**（向量库）：使用 `upsert`，相同 id 会覆盖，不产生重复
 2. **`data/user_data.json`**：本地备份，Milvus 数据清空后可用 `python -m src.ingest ../data/user_data.json` 重建
+3. **`data/documents.json`**：产品化元数据主文件，包含 `document_id`、`text_hash`、`source`、`tags`、`created_at`、`updated_at`
 
 ---
 

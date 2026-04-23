@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% set active = "documents" %}
+{% block title %}文档管理 · Qdrant Demo{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <div class="eyebrow-row">
+    <span class="eyebrow">Document Ops</span>
+    <a href="/docs#/文档管理" class="docs-link">Document APIs</a>
+  </div>
+  <div class="hero-grid">
+    <div>
+      <h1 class="page-title">文档管理与重建控制台</h1>
+      <p class="page-summary">
+        这里承接 P0 必须上线的文档管理动作：分页查看、按 ID 审阅、文本与元数据更新、删除，以及一键重建向量索引。
+      </p>
+      <div class="hero-metrics documents-hero-metrics">
+        <div class="metric-card metric-card-featured">
+          <span class="metric-label">当前模型</span>
+          <strong class="metric-value">{{ model.model }}</strong>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">维度 / 离线</span>
+          <strong class="metric-value">{{ model.dimension or '未知' }}</strong>
+          <span class="metric-note">offline={{ model.local_only }}，loaded={{ model.loaded }}</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">分页状态</span>
+          <strong class="metric-value">{{ total }}</strong>
+          <span class="metric-note">当前第 {{ page or 1 }} 页，每页 {{ page_size or 50 }} 条。</span>
+        </div>
+        <div class="metric-card metric-card-wide metric-card-path">
+          <span class="metric-label">本地路径</span>
+          <code class="metric-path">{{ model.source }}</code>
+        </div>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="side-note">
+        <strong>更新策略</strong>
+        <p>文本、分类、来源、标签变更后，保存动作会自动重建 embedding 并 upsert，保证检索索引和元数据一致。</p>
+      </div>
+      <div class="side-note">
+        <strong>索引运维</strong>
+        <form method="post" action="/documents/reindex" onsubmit="return confirm('确认按 documents.json 重建当前向量集合？')">
+          <input type="hidden" name="page" value="{{ page or 1 }}">
+          <input type="hidden" name="page_size" value="{{ page_size or 50 }}">
+          <button type="submit" class="btn btn-sm">重建向量索引</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+{% if message %}
+<div class="alert alert-success">✓ {{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error">✗ {{ error }}</div>
+{% endif %}
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">当前页文档列表</h2>
+      <div class="section-note">共 {{ total }} 条文档。支持单条更新，也支持按当前页批量删除和批量重建。</div>
+    </div>
+    {% if documents %}
+    <span class="mono-label">page {{ page or 1 }}</span>
+    {% endif %}
+  </div>
+  {% if documents %}
+  <form id="batch-action-form" method="post" class="batch-toolbar" style="margin-top:18px">
+    <input type="hidden" name="selected_ids" id="selected-ids-input">
+    <input type="hidden" name="page" value="{{ page or 1 }}">
+    <input type="hidden" name="page_size" value="{{ page_size or 50 }}">
+    <div class="result-meta">
+      <label class="id-badge" style="gap:8px; cursor:pointer">
+        <input type="checkbox" id="select-all-docs">
+        <span>全选当前页</span>
+      </label>
+      <span class="mono-label" id="selected-count-label">已选 0 条</span>
+    </div>
+    <div class="result-meta">
+      <button type="submit" class="btn btn-sm btn-outline" data-action="/documents/batch-reindex">批量重建向量</button>
+      <button type="submit" class="btn btn-danger btn-sm" data-action="/documents/batch-delete" data-confirm="确认删除选中的文档？">批量删除</button>
+    </div>
+  </form>
+  <div class="result-list" style="margin-top:18px">
+    {% for doc in documents %}
+    <article class="document-card" data-record-id="{{ doc.id }}">
+      <div class="document-header">
+        <div class="result-meta">
+          <label class="id-badge" style="gap:8px; cursor:pointer">
+            <input type="checkbox" class="doc-checkbox" value="{{ doc.id }}">
+            <span>选择</span>
+          </label>
+          <span class="id-badge">id={{ doc.id }}</span>
+          <span class="score-badge">{{ doc.category or 'uncategorized' }}</span>
+          <span class="tag-badge">{{ doc.source or 'unknown' }}</span>
+        </div>
+        <span class="mono-label">row {{ ((page or 1) - 1) * (page_size or 50) + loop.index }}</span>
+      </div>
+      <form method="post" action="/documents/{{ doc.id }}/update" class="stack">
+        <input type="hidden" name="page" value="{{ page or 1 }}">
+        <input type="hidden" name="page_size" value="{{ page_size or 50 }}">
+        <div>
+          <label>文本</label>
+          <textarea name="text" rows="3">{{ doc.text }}</textarea>
+        </div>
+        <div class="form-grid triple-grid">
+          <div>
+            <label>分类</label>
+            <input type="text" name="category" value="{{ doc.category or '' }}">
+          </div>
+          <div>
+            <label>标签（逗号分隔）</label>
+            <input type="text" name="tags" value="{{ (doc.tags or []) | join(',') }}">
+          </div>
+          <div>
+            <label>来源</label>
+            <input type="text" name="source" value="{{ doc.source or 'web' }}">
+          </div>
+        </div>
+        <div class="meta-grid">
+          <div class="meta-item">
+            <span>document_id</span>
+            <code>{{ doc.document_id }}</code>
+          </div>
+          <div class="meta-item">
+            <span>text_hash</span>
+            <code>{{ doc.text_hash }}</code>
+          </div>
+          <div class="meta-item">
+            <span>tags</span>
+            <code>{{ (doc.tags or []) | join(', ') or '[]' }}</code>
+          </div>
+          <div class="meta-item">
+            <span>created_at</span>
+            <code>{{ doc.created_at }}</code>
+          </div>
+          <div class="meta-item">
+            <span>updated_at</span>
+            <code>{{ doc.updated_at }}</code>
+          </div>
+        </div>
+        <div class="action-row">
+          <button type="submit" class="btn btn-sm">保存并重建向量</button>
+          <button type="submit" class="btn btn-danger btn-sm" formaction="/documents/{{ doc.id }}/delete"
+                  onclick="return confirm('确认删除文档 {{ doc.id }}？')">删除</button>
+        </div>
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">还没有 Web/API 写入的文档。先去 <a href="/ingest">写入数据</a>。</div>
+  {% endif %}
+</section>
+
+{% if total > (page_size or 50) %}
+<section class="surface">
+  <div class="pagination">
+    <div class="section-note">第 {{ page or 1 }} / {{ ((total - 1) // (page_size or 50)) + 1 }} 页</div>
+    <div class="result-meta">
+      {% if (page or 1) > 1 %}
+      <a href="/documents?page={{ (page or 1) - 1 }}&page_size={{ page_size or 50 }}" class="btn btn-outline btn-sm">上一页</a>
+      {% endif %}
+      {% if (page or 1) * (page_size or 50) < total %}
+      <a href="/documents?page={{ (page or 1) + 1 }}&page_size={{ page_size or 50 }}" class="btn btn-outline btn-sm">下一页</a>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<script>
+const batchForm = document.getElementById('batch-action-form');
+const selectedIdsInput = document.getElementById('selected-ids-input');
+const selectedCountLabel = document.getElementById('selected-count-label');
+const selectAllCheckbox = document.getElementById('select-all-docs');
+const docCheckboxes = Array.from(document.querySelectorAll('.doc-checkbox'));
+
+function syncSelectedState() {
+  const selected = docCheckboxes.filter((item) => item.checked).map((item) => item.value);
+  if (selectedIdsInput) selectedIdsInput.value = selected.join(',');
+  if (selectedCountLabel) selectedCountLabel.textContent = '已选 ' + selected.length + ' 条';
+  if (selectAllCheckbox) {
+    selectAllCheckbox.checked = selected.length > 0 && selected.length === docCheckboxes.length;
+    selectAllCheckbox.indeterminate = selected.length > 0 && selected.length < docCheckboxes.length;
+  }
+}
+
+if (selectAllCheckbox) {
+  selectAllCheckbox.addEventListener('change', () => {
+    docCheckboxes.forEach((item) => {
+      item.checked = selectAllCheckbox.checked;
+    });
+    syncSelectedState();
+  });
+}
+
+docCheckboxes.forEach((item) => {
+  item.addEventListener('change', syncSelectedState);
+});
+
+batchForm?.querySelectorAll('button[type="submit"]').forEach((button) => {
+  button.addEventListener('click', (event) => {
+    syncSelectedState();
+    const selected = selectedIdsInput?.value || '';
+    if (!selected) {
+      event.preventDefault();
+      window.alert('请至少选择一条文档');
+      return;
+    }
+    const action = button.getAttribute('data-action');
+    if (action) batchForm.action = action;
+    const confirmText = button.getAttribute('data-confirm');
+    if (confirmText && !window.confirm(confirmText)) {
+      event.preventDefault();
+    }
+  });
+});
+
+syncSelectedState();
+</script>
+
+{% endblock %}

@@ -5,8 +5,8 @@
     pip install sentence-transformers python-dotenv
     python scripts/preload_model.py
 
-模型会被缓存到 ~/.cache/huggingface（或 HF_HOME 指定的目录），
-三个子项目共用同一份缓存，不会重复下载。
+模型会被缓存到项目根目录 ./models/，三个子项目共用同一份缓存。
+服务运行时默认只读 ./models/，不会再访问 HuggingFace。
 
 国内用户如果下载慢/失败，先设置 HuggingFace 镜像再运行：
     export HF_ENDPOINT=https://hf-mirror.com
@@ -42,7 +42,9 @@ def main() -> int:
         print(f"[info] HF_ENDPOINT={hf_endpoint} (使用镜像)")
     else:
         print("[info] 使用官方 HuggingFace 站点；国内网络慢可先 export HF_ENDPOINT=https://hf-mirror.com")
-    print(f"[info] 将下载 {len(MODELS)} 个模型，合计约 185MB\n")
+    print("[info] 下载来源: HuggingFace Hub（或 HF_ENDPOINT 指定的镜像）")
+    print("[info] 下载目标: 项目根目录 ./models/")
+    print(f"[info] 将下载 {len(MODELS)} 个模型，合计约 185MB: {', '.join(MODELS)}\n")
 
     for name in MODELS:
         print(f"[下载] {name}")

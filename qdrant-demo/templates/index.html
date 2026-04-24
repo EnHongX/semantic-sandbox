@@ -159,11 +159,12 @@
           {% if r.category %}
           <span class="tag-badge">{{ r.category }}</span>
           {% endif %}
-          {% if r.source %}
-          <span class="id-badge">{{ r.source }}</span>
-          {% endif %}
-        </div>
-        <span class="mono-label">top {{ loop.index }}</span>
+        {% if r.source %}
+        <span class="id-badge">{{ r.source }}</span>
+        {% endif %}
+        <span class="id-badge">{{ (r.text or '') | length }} 字</span>
+      </div>
+      <span class="mono-label">top {{ loop.index }}</span>
       </div>
       <div class="result-text">{{ r.snippet or r.text }}</div>
       <div class="result-explain">
@@ -184,7 +185,7 @@
       </div>
       {% endif %}
       <details style="margin-top:12px">
-        <summary class="muted-link" style="cursor:pointer">查看原文</summary>
+        <summary class="muted-link" style="cursor:pointer">查看原文 · {{ (r.text or '') | length }} 字</summary>
         <div class="snippet-text" style="margin-top:10px">{{ r.text }}</div>
       </details>
     </div>

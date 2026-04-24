@@ -60,6 +60,9 @@
       color: var(--data);
       font-family: var(--font-mono);
       font-size: 12px;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .topbar {
@@ -473,6 +476,19 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .page-hero > *,
+    .surface > *,
+    .document-card > *,
+    .info-card > *,
+    .hero-grid > *,
+    .hero-side > *,
+    .split-grid > *,
+    .form-grid > *,
+    .surface-header > *,
+    .document-header > * {
+      min-width: 0;
+    }
+
     label {
       display: block;
       margin-bottom: 8px;
@@ -540,6 +556,8 @@
       min-height: 148px;
       resize: vertical;
       line-height: 1.7;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     select[multiple] {
@@ -899,6 +917,7 @@
     }
 
     .result-item {
+      min-width: 0;
       padding: 18px;
       border-radius: 20px;
       background: rgba(255, 255, 255, 0.03);
@@ -920,11 +939,15 @@
       display: inline-flex;
       align-items: center;
       min-height: 28px;
+      max-width: 100%;
       padding: 0 10px;
       border-radius: 999px;
       font-size: 12px;
       font-weight: 600;
       border: 1px solid transparent;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .score-badge {
@@ -959,6 +982,8 @@
       font-size: 15px;
       line-height: 1.8;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .keyword-hit {
@@ -1000,6 +1025,11 @@
       font-size: 14px;
       line-height: 1.8;
       white-space: pre-wrap;
+      overflow: auto;
+      max-height: 320px;
+      overscroll-behavior: contain;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .result-explain {

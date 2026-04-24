@@ -69,7 +69,7 @@ app = FastAPI(
     title="Milvus Demo API",
     description=(
         "向量数据库写入 & 语义搜索接口。\n\n"
-        "- `POST /api/ingest`：文本 → 向量 → 写入 Milvus，同时追加到 `data/user_data.json`\n"
+        "- `POST /api/ingest`：文本 → 向量 → 写入 Milvus，同时写入 `data/documents.json` 并镜像到 `data/user_data.json`\n"
         "- `POST /api/search`：查询文本 → 向量 → 近邻检索 → 返回 Top-K 结果"
     ),
     version="1.0.0",
@@ -320,7 +320,7 @@ async def health():
     response_model=IngestResponse,
     summary="写入文本到向量库",
     description=(
-        "将 `texts` 列表中的每条文本向量化后 upsert 到 Milvus，并追加保存到 `data/user_data.json`。\n\n"
+        "将 `texts` 列表中的每条文本向量化后 upsert 到 Milvus，同时写入 `data/documents.json` 并镜像到 `data/user_data.json`。\n\n"
         "ID 自动从现有数据的最大 id + 1 开始递增；重复文本会跳过并计入 `skipped`。"
     ),
     tags=["数据写入"],
@@ -361,7 +361,10 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     "/api/upload",
     response_model=IngestResponse,
     summary="上传文件批量写入向量库",
-    description="上传 JSON（`[{\"text\":\"...\"}]`）或 CSV（首行含 `text` 列）文件，批量向量化写入 Milvus；重复文本会跳过。",
+    description=(
+        "上传 JSON（`[{\"text\":\"...\"}]`）或 CSV（首行含 `text` 列）文件，批量向量化写入 Milvus；"
+        "支持 `UTF-8 BOM`，重复文本会跳过。"
+    ),
     tags=["数据写入"],
 )
 async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
@@ -489,6 +492,7 @@ async def api_delete_record(record_id: int) -> dict:
 @app.delete(
     "/api/records",
     summary="清空向量库中所有记录（集合重建）",
+    description="删除并重建当前 Milvus collection，同时清空 `data/documents.json` 和 `data/user_data.json`。",
     tags=["数据写入"],
 )
 async def api_clear_records() -> dict:

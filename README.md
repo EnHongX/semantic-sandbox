@@ -74,7 +74,7 @@
 | 数据写入 | 命令行 JSON 入库、Web 多行文本写入、Web/API 上传 JSON 或 CSV |
 | 语义搜索 | 命令行交互式搜索、Web 搜索页、`POST /api/search` |
 | 元数据过滤 | Web/API 支持 `categories[]`、`tags[]`、`created_at_from`、`created_at_to`；命令行示例保留 `category` 演示 |
-| 数据管理 | 文档分页、按 ID 查看、单条更新/删除、批量删除、批量重建、本地 `data/user_data.json` / `data/documents.json` 备份 |
+| 数据管理 | 文档分页、按 ID 查看、单条更新/删除、批量删除、批量重建；`data/documents.json` 为主元数据文件，`data/user_data.json` 为兼容镜像 |
 | 运维辅助 | `/health`、`/api/health/panel`、`/api/model/status`、搜索审计日志、应用错误日志、Makefile 常用命令、三库性能基准测试 |
 
 边界也要明确：这是学习和对比项目，不是生产级服务。Web UI 和 API 目前没有鉴权、多用户隔离和限流；虽然已经提供基础搜索审计日志和最小健康面板，但还没有权限控制、告警和正式运维体系。如果部署到服务器，只建议放在内网、VPN 或 Nginx Basic Auth 后面。
@@ -181,13 +181,13 @@ uvicorn src.app:app --reload --port 8888
 
 - 每行一条文本的手动写入
 - 一键加载英文 / 中文示例数据
-- 上传 JSON 或 CSV 文件，文件中必须有 `text` 字段
+- 上传 JSON 或 CSV 文件，文件中必须有 `text` 字段，支持 `UTF-8` / `UTF-8 BOM`
 - 文件选择优先使用浏览器系统选择器，并保留原生文件框 fallback
 - 支持把 JSON / CSV 文件直接拖拽到上传区域，适合浏览器扩展或系统文件框拦截时兜底
 - 选择或拖拽文件后会显示已选文件名和大小，提交前可确认
 - 上传后展示导入任务状态，包含成功 / 已存在 / 失败统计
 - 失败行支持下载 CSV 复盘
-- 清空当前集合和本地 `data/user_data.json` 备份
+- 清空当前集合，以及本地 `data/documents.json` / `data/user_data.json`
 
 ### Makefile 快捷命令
 
@@ -294,7 +294,7 @@ curl -X POST http://localhost:8888/api/ingest \
 | `existing_count` | `int` | 已存在记录数，等于 `skipped` |
 | `existing` | `object[]` | 已存在记录明细，包含命中的 `id`、`document_id`、`text_hash` 和命中原因 |
 
-写入成功后，文本会同时追加到 `data/user_data.json`，方便向量库清空后重新入库。Web/API 写入会按 `document_id` / 规范化文本生成的 `text_hash` 做幂等判断，同一段文本重复提交时会返回“已存在”明细，不会再次入库。
+写入成功后，元数据会先写入 `data/documents.json`，并同步镜像到 `data/user_data.json`，方便向量库清空后重新入库。查询和去重默认优先读取 `data/documents.json`；仅当它不存在或为空时，才回退到 `data/user_data.json`。Web/API 写入会按 `document_id` / 规范化文本生成的 `text_hash` 做幂等判断，同一段文本重复提交时会返回“已存在”明细，不会再次入库。
 
 ### POST /api/upload — 上传文件批量写入
 
@@ -307,8 +307,8 @@ curl -X POST http://localhost:8888/api/upload \
 
 | 文件类型 | 格式要求 |
 |---|---|
-| JSON | 数组格式，每项至少包含 `text`，例如 `[{"text": "hello"}]` |
-| CSV | 首行必须包含 `text` 列 |
+| JSON | 数组格式，每项至少包含 `text`，例如 `[{"text": "hello"}]`；支持 `UTF-8 BOM` |
+| CSV | 首行必须包含 `text` 列；支持 `UTF-8 BOM` |
 
 上传接口支持保留 `document_id`、`category`、`tags`、`source` 等元数据；需要完全自定义 `id` 或走离线批量重建时，仍建议用命令行 `python -m src.ingest your.json`。
 
@@ -439,7 +439,7 @@ curl -X DELETE http://localhost:8888/api/record/12
 curl -X DELETE http://localhost:8888/api/records
 ```
 
-该接口会删除并重建当前集合，同时清空 `data/user_data.json`。
+该接口会删除并重建当前集合，同时清空 `data/documents.json` 和 `data/user_data.json`。
 
 ### GET /api/samples/{lang} — 获取示例文本
 
@@ -517,7 +517,7 @@ Memory: +42MB
 | `data/sample_zh.json` | 10 | 中文 | 中文语义检索示例数据，不含 `category` 字段 |
 | `data/sample_large_en.json` | 100 | 英文 | 8 个分类（technology / science / geography / history / food / sports / art / nature），ID 从 101 起，适合演示过滤检索 |
 
-通过 Web UI 或 REST API 写入的自定义文本会追加到 `data/user_data.json`，元数据会写入 `data/documents.json`，导入失败报告和搜索 / 错误日志也会写入 `data/import_reports/`、`data/search_logs.jsonl`、`data/app_errors.jsonl`。这些都是本地运行产物，已加入 `.gitignore`，不会进仓库。
+通过 Web UI 或 REST API 写入的自定义文本会先写入 `data/documents.json`，并同步镜像到 `data/user_data.json`；导入失败报告和搜索 / 错误日志会写入 `data/import_reports/`、`data/search_logs.jsonl`、`data/app_errors.jsonl`。这些都是本地运行产物，已加入 `.gitignore`，不会进仓库。
 
 ---
 
@@ -801,14 +801,14 @@ curl http://localhost:8888/health
 
 ### 写入幂等
 
-当前 Web UI / REST API 使用 `data/user_data.json` 和本次提交批次做文本去重，能避免 demo 中重复提交造成重复搜索结果。但这不是生产级幂等：如果本地备份丢失、多人并发写入、或直接操作向量库，仍可能产生重复数据。
+当前 Web UI / REST API 使用 `data/documents.json`（缺失时回退 `data/user_data.json`）和本次提交批次做文本去重，能避免 demo 中重复提交造成重复搜索结果。但这不是生产级幂等：如果本地文件丢失、多人并发写入、或直接操作向量库，仍可能产生重复数据。
 
 生产建议：
 
 - 给文本生成稳定的 `text_hash`，例如对规范化文本做 SHA-256。
 - 把 `text_hash` 或业务侧 `document_id` 作为唯一键，不只依赖自增 ID。
 - 写入链路使用真正的 upsert / 唯一约束 / 幂等键，保证重复请求可安全重试。
-- 把本地 `data/user_data.json` 替换成正式业务数据库或对象存储备份。
+- 把本地 `data/documents.json` / `data/user_data.json` 替换成正式业务数据库或对象存储备份。
 
 ### 代码复用
 

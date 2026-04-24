@@ -426,6 +426,8 @@ curl -X POST http://localhost:8890/api/ingest \
 
 Web 写入页支持按钮选择和拖拽上传两种入口，最终都走同一条上传链路。选择或拖拽文件后页面会显示文件名和大小，提交前可确认。
 
+上传文件支持 `UTF-8` / `UTF-8 BOM` 编码；CSV 首行需要 `text` 列，JSON 顶层需要是数组。
+
 支持字段：
 
 | 字段 | 必填 | 说明 |
@@ -513,7 +515,7 @@ curl -X POST http://localhost:8890/api/search \
 | `POST` | `/api/upload` | 上传 JSON/CSV 批量写入，支持 `text/document_id/category/tags/source` |
 | `GET` | `/api/count` | 查询当前集合记录数 |
 | `DELETE` | `/api/record/{record_id}` | 删除指定 ID 的记录 |
-| `DELETE` | `/api/records` | 清空集合并清空 `data/user_data.json` |
+| `DELETE` | `/api/records` | 清空集合并清空 `data/documents.json` / `data/user_data.json` |
 | `GET` | `/api/samples/{lang}` | 返回 `en` 或 `zh` 示例文本 |
 | `GET` | `/api/documents` | 分页查看文档元数据 |
 | `GET` | `/api/documents/{record_id}` | 查看单条文档 |
@@ -535,8 +537,10 @@ curl -X POST http://localhost:8890/api/search \
 
 写入数据双重保存：
 1. **Milvus**（向量库）：使用 `upsert`，相同 id 会覆盖，不产生重复
-2. **`data/user_data.json`**：本地备份，Milvus 数据清空后可用 `python -m src.ingest ../data/user_data.json` 重建
-3. **`data/documents.json`**：产品化元数据主文件，包含 `document_id`、`text_hash`、`source`、`tags`、`created_at`、`updated_at`
+2. **`data/documents.json`**：产品化元数据主文件，包含 `document_id`、`text_hash`、`source`、`tags`、`created_at`、`updated_at`
+3. **`data/user_data.json`**：兼容镜像，Milvus 数据清空后可用 `python -m src.ingest ../data/user_data.json` 重建
+
+> 查询 / 去重优先读取 `data/documents.json`；只有主文件缺失或为空时，才回退到 `data/user_data.json`。
 
 ---
 

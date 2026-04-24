@@ -583,12 +583,13 @@ def clear_documents() -> None:
 
 
 def parse_upload_rows(content: bytes, filename: str) -> list[dict]:
-    if filename.endswith(".csv"):
+    decoded = content.decode("utf-8-sig")
+    if filename.lower().endswith(".csv"):
         import csv
         import io
 
-        return list(csv.DictReader(io.StringIO(content.decode("utf-8"))))
-    data = json.loads(content.decode("utf-8"))
+        return list(csv.DictReader(io.StringIO(decoded)))
+    data = json.loads(decoded)
     if not isinstance(data, list):
         raise ValueError("JSON 顶层必须是数组")
     return data

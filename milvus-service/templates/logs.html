@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% set active = "logs" %}
+{% block title %}日志 · {{ backend | capitalize }} Service{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <div class="eyebrow-row">
+    <span class="eyebrow">Logs</span>
+    <span class="docs-link">{{ backend }}</span>
+  </div>
+  <div class="hero-grid">
+    <div>
+      <h1 class="page-title">审计与运行日志</h1>
+      <p class="page-summary">只展示有排障和追责价值的日志：登录鉴权、文档操作、搜索、错误和导入任务。</p>
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span class="metric-label">当前视图</span>
+          <strong class="metric-value">{{ logs.kind }}</strong>
+          <span class="metric-note">limit={{ logs.limit }}</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">保留原则</span>
+          <strong class="metric-value">Audit</strong>
+          <span class="metric-note">不保存密码、API Key、全文请求体</span>
+        </div>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="side-note">
+        <strong>日志入口</strong>
+        <p>普通访问日志不写入 PostgreSQL；建议交给 Docker、Nginx 或日志系统收集。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">日志类型</h2>
+      <div class="section-note">审计日志默认只看当前向量后端；导入任务是全局任务。</div>
+    </div>
+  </div>
+  <div class="action-row" style="margin-top:18px">
+    <a href="/logs?kind=audit&limit={{ logs.limit }}" class="btn {% if logs.kind == 'audit' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">审计</a>
+    <a href="/logs?kind=search&limit={{ logs.limit }}" class="btn {% if logs.kind == 'search' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">搜索</a>
+    <a href="/logs?kind=errors&limit={{ logs.limit }}" class="btn {% if logs.kind == 'errors' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">错误</a>
+    <a href="/logs?kind=imports&limit={{ logs.limit }}" class="btn {% if logs.kind == 'imports' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">导入任务</a>
+  </div>
+</section>
+
+<section class="surface">
+  {% if logs.kind == 'audit' %}
+    <div class="surface-header">
+      <div>
+        <h2 class="surface-title">审计日志</h2>
+        <div class="section-note">登录、鉴权失败、删除、清空、重建、写入等关键操作。</div>
+      </div>
+    </div>
+    {% if logs.audit_logs %}
+    <div class="result-list" style="margin-top:18px">
+      {% for item in logs.audit_logs %}
+      <div class="result-item {% if item.level in ['warning', 'error', 'critical'] %}danger-zone{% endif %}">
+        <div class="document-header">
+          <div class="result-meta">
+            <span class="id-badge">{{ item.created_at or item.ts }}</span>
+            <span class="tag-badge">{{ item.event }}</span>
+            <span class="mono-label">{{ item.actor or 'unknown' }}</span>
+          </div>
+          <span class="mono-label">{{ item.method }} {{ item.path }}</span>
+        </div>
+        <div class="result-explain">
+          level={{ item.level }} · target={{ item.target_type or '-' }}{% if item.target_id %}:{{ item.target_id }}{% endif %} · ip={{ item.client_ip or '-' }}
+          {% if item.request_id %}<br>request_id={{ item.request_id }}{% endif %}
+          {% if item.metadata %}
+            {% for key, value in item.metadata.items() %}
+              <br>{{ key }}={{ value }}
+            {% endfor %}
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无审计日志。</div>
+    {% endif %}
+  {% elif logs.kind == 'search' %}
+    <div class="surface-header">
+      <div>
+        <h2 class="surface-title">搜索日志</h2>
+        <div class="section-note">用于排查搜索质量、过滤条件和延迟。</div>
+      </div>
+    </div>
+    {% if logs.search_logs %}
+    <div class="result-list" style="margin-top:18px">
+      {% for item in logs.search_logs %}
+      <div class="result-item">
+        <div class="document-header">
+          <div class="result-meta">
+            <span class="id-badge">{{ item.created_at }}</span>
+            <span class="tag-badge">{{ item.payload.surface or 'api' }}</span>
+            <span class="mono-label">results={{ item.payload.result_count or 0 }}</span>
+          </div>
+          <span class="mono-label">{{ item.payload.latency_ms or '-' }} ms</span>
+        </div>
+        <div class="result-text">{{ item.query }}</div>
+        <div class="result-explain">filter={{ item.payload.filter or {} }} · limit={{ item.payload.limit or '-' }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无搜索日志。</div>
+    {% endif %}
+  {% elif logs.kind == 'errors' %}
+    <div class="surface-header">
+      <div>
+        <h2 class="surface-title">错误日志</h2>
+        <div class="section-note">应用主动捕获的异常，普通访问日志不在这里。</div>
+      </div>
+    </div>
+    {% if logs.error_logs %}
+    <div class="result-list" style="margin-top:18px">
+      {% for item in logs.error_logs %}
+      <div class="result-item danger-zone">
+        <div class="document-header">
+          <div class="result-meta">
+            <span class="id-badge">{{ item.created_at }}</span>
+            <span class="tag-badge">{{ item.operation or item.payload.operation or 'unknown' }}</span>
+            <span class="mono-label">{{ item.surface or item.payload.surface or 'system' }}</span>
+          </div>
+          <span class="mono-label">{{ item.backend }}</span>
+        </div>
+        <div class="result-text">{{ item.error }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无错误日志。</div>
+    {% endif %}
+  {% else %}
+    <div class="surface-header">
+      <div>
+        <h2 class="surface-title">导入任务</h2>
+        <div class="section-note">批量上传文件的结果摘要和失败行下载入口。</div>
+      </div>
+    </div>
+    {% if logs.import_jobs %}
+    <div class="result-list" style="margin-top:18px">
+      {% for item in logs.import_jobs %}
+      <div class="result-item {% if item.failed %}danger-zone{% endif %}">
+        <div class="document-header">
+          <div class="result-meta">
+            <span class="id-badge">{{ item.created_at }}</span>
+            <span class="tag-badge">{{ item.status }}</span>
+            <span class="mono-label">{{ item.source_filename }}</span>
+          </div>
+          <span class="mono-label">{{ item.job_id }}</span>
+        </div>
+        <div class="result-explain">
+          inserted={{ item.inserted }} · skipped={{ item.skipped }} · failed={{ item.failed }}
+          {% if item.failed_rows_download_url %}<br><a href="{{ item.failed_rows_download_url }}">下载失败行 CSV</a>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无导入任务。</div>
+    {% endif %}
+  {% endif %}
+</section>
+
+{% endblock %}

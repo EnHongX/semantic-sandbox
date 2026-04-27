@@ -116,6 +116,22 @@ class WebLoginAuthTests(unittest.TestCase):
         self.assertIn("semantic_sandbox_session=", login.headers["set-cookie"])
         self.assertEqual(home.status_code, 200)
 
+    def test_logout_clears_session(self) -> None:
+        self._enable_auth()
+        client = self._client()
+        client.post(
+            "/login",
+            data={"username": "admin", "password": "secret", "next": "/"},
+            follow_redirects=False,
+        )
+
+        logout = client.get("/logout", follow_redirects=False)
+        home = client.get("/", follow_redirects=False)
+
+        self.assertEqual(logout.status_code, 303)
+        self.assertEqual(logout.headers["location"], "/login")
+        self.assertEqual(home.status_code, 303)
+
     def test_open_redirect_next_is_rejected(self) -> None:
         self._enable_auth()
 

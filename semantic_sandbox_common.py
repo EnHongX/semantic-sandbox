@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import secrets
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,6 +21,7 @@ DOCUMENTS_FILE = DATA_DIR / "documents.json"
 USER_DATA_FILE = DATA_DIR / "user_data.json"
 SEARCH_LOG_FILE = DATA_DIR / "search_logs.jsonl"
 ERROR_LOG_FILE = DATA_DIR / "app_errors.jsonl"
+AUDIT_LOG_FILE = DATA_DIR / "audit_logs.jsonl"
 IMPORT_REPORT_DIR = DATA_DIR / "import_reports"
 DEFAULT_CATEGORY_OPTIONS = [
     "technology",
@@ -209,6 +211,97 @@ def filter_documents(docs: Iterable[dict], filters: dict | None = None) -> list[
     return [doc for doc in docs if document_matches_filters(doc, filters)]
 
 
+def truncate_text(value: Any, limit: int = 200) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def request_log_context(request: Any) -> dict:
+    headers = getattr(request, "headers", {}) or {}
+    client = getattr(request, "client", None)
+    forwarded_for = str(headers.get("x-forwarded-for", "")).split(",", 1)[0].strip()
+    request_id = str(headers.get("x-request-id", "")).strip()
+    state = getattr(request, "state", None)
+    if not request_id and state is not None:
+        request_id = str(getattr(state, "request_id", "") or "")
+    return {
+        "request_id": request_id,
+        "method": str(getattr(request, "method", "") or ""),
+        "path": str(getattr(getattr(request, "url", None), "path", "") or ""),
+        "client_ip": forwarded_for or str(getattr(client, "host", "") or ""),
+        "user_agent": truncate_text(headers.get("user-agent", ""), 300),
+    }
+
+
+def web_actor_from_request(request: Any) -> str:
+    try:
+        username = request.session.get("web_user", "")
+    except Exception:
+        username = ""
+    return f"web:{username}" if username else "web:anonymous"
+
+
+def actor_from_request(request: Any) -> str:
+    if str(getattr(getattr(request, "url", None), "path", "") or "").startswith("/api/"):
+        return "api-key"
+    return web_actor_from_request(request)
+
+
+def _read_jsonl(path: Path, limit: int = 50) -> list[dict]:
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return list(reversed(rows[-min(max(limit, 1), 200):]))
+
+
+def append_audit_log(entry: dict) -> None:
+    payload = {
+        "ts": utc_now(),
+        "event": str(entry.get("event", "")),
+        "level": str(entry.get("level", "info")),
+        "actor": str(entry.get("actor", "")),
+        "backend": str(entry.get("backend", "")),
+        "request_id": str(entry.get("request_id", "")),
+        "method": str(entry.get("method", "")),
+        "path": str(entry.get("path", "")),
+        "client_ip": str(entry.get("client_ip", "")),
+        "user_agent": truncate_text(entry.get("user_agent", ""), 300),
+        "target_type": str(entry.get("target_type", "")),
+        "target_id": str(entry.get("target_id", "")),
+        "metadata": entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {},
+    }
+    try:
+        if _postgres_enabled():
+            _pg().save_audit_log(payload)
+            return
+        AUDIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"audit log write failed: {exc}", file=sys.stderr)
+
+
+def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_audit_logs(backend=backend, event=event, limit=limit)
+    rows = _read_jsonl(AUDIT_LOG_FILE, limit=limit)
+    if backend:
+        rows = [row for row in rows if row.get("backend") == backend]
+    if event:
+        rows = [row for row in rows if row.get("event") == event]
+    return rows
+
+
 def append_error_log(entry: dict) -> None:
     if _postgres_enabled():
         _pg().save_error_log(entry)
@@ -222,18 +315,26 @@ def append_error_log(entry: dict) -> None:
 def recent_errors(limit: int = 10) -> list[dict]:
     if _postgres_enabled():
         return _pg().recent_errors(limit)
-    if not ERROR_LOG_FILE.exists():
-        return []
-    rows: list[dict] = []
-    for line in ERROR_LOG_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return list(reversed(rows[-limit:]))
+    return _read_jsonl(ERROR_LOG_FILE, limit=limit)
+
+
+def list_error_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_error_logs(backend=backend, limit=limit)
+    rows = _read_jsonl(ERROR_LOG_FILE, limit=limit)
+    if backend:
+        rows = [row for row in rows if row.get("backend") == backend]
+    return [
+        {
+            "backend": str(row.get("backend", "")),
+            "operation": str(row.get("operation", "")),
+            "surface": str(row.get("surface", "")),
+            "error": str(row.get("error", "")),
+            "payload": row,
+            "created_at": str(row.get("ts", "")),
+        }
+        for row in rows
+    ]
 
 
 def query_terms(query: str, text: str = "") -> list[str]:
@@ -771,6 +872,23 @@ def append_search_log(entry: dict) -> None:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def list_search_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_search_logs(backend=backend, limit=limit)
+    rows = _read_jsonl(SEARCH_LOG_FILE, limit=limit)
+    if backend:
+        rows = [row for row in rows if row.get("backend") == backend]
+    return [
+        {
+            "backend": str(row.get("backend", "")),
+            "query": str(row.get("query", "")),
+            "payload": row,
+            "created_at": str(row.get("ts", "")),
+        }
+        for row in rows
+    ]
+
+
 def summarize_import_errors(errors: list[dict]) -> list[str]:
     return [f"第 {int(item.get('row_number', 0))} 行：{item.get('error', '')}" for item in errors]
 
@@ -836,6 +954,21 @@ def load_import_job(job_id: str) -> dict | None:
         return _pg().load_import_job(job_id)
     data = _read_json_list(IMPORT_REPORT_DIR / f"{job_id}.json")
     return data[0] if data else None
+
+
+def list_import_jobs(limit: int = 50) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_import_jobs(limit=limit)
+    rows: list[dict] = []
+    if not IMPORT_REPORT_DIR.exists():
+        return rows
+    for path in sorted(IMPORT_REPORT_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        data = _read_json_list(path)
+        if data:
+            rows.append(data[0])
+        if len(rows) >= min(max(limit, 1), 200):
+            break
+    return rows
 
 
 def import_job_failed_rows_path(job_id: str) -> Path:

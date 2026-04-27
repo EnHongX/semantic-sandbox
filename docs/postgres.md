@@ -57,8 +57,11 @@ COMPOSE_PROFILES=qdrant,weaviate,milvus
 | `documents` | 文档文本、分类、标签、来源和幂等键 |
 | `vector_sync_states` | 每个文档在每个向量后端的索引状态 |
 | `import_jobs` | 批量导入任务摘要和失败行信息 |
-| `search_logs` | 搜索审计日志 |
+| `audit_logs` | Web 登录、登出、API Key 鉴权失败、写入、上传、删除、清空、重建索引等关键审计事件 |
+| `search_logs` | 搜索请求摘要、过滤条件、结果数和延迟 |
 | `app_errors` | 应用错误日志 |
+
+普通访问日志不写入 PostgreSQL，建议由 Docker、Nginx 或日志系统收集。数据库只保存有审计、恢复、排障价值的日志，且不记录密码、完整 API Key 和全文请求体。
 
 ## 旧 JSON 迁移
 

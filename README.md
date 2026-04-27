@@ -76,7 +76,7 @@
 | 元数据过滤 | Web/API 支持 `categories[]`、`tags[]`、`created_at_from`、`created_at_to`；命令行示例保留 `category` 演示 |
 | 数据管理 | 文档分页、按 ID 查看、单条更新/删除、批量删除、批量重建；PostgreSQL `documents` 表为元数据主表 |
 | 访问控制 | Web UI 使用签名 Cookie 登录态；REST API 使用 `X-API-Key` |
-| 运维辅助 | `/health`、`/api/health/panel`、`/api/model/status`、搜索审计日志、应用错误日志、Makefile 常用命令、三库性能基准测试 |
+| 运维辅助 | `/health`、`/api/health/panel`、`/logs`、`/api/model/status`、审计日志、搜索日志、应用错误日志、Makefile 常用命令、三库性能基准测试 |
 
 边界也要明确：当前服务已经具备数据库持久化、索引重建、健康检查、基础审计日志、Web UI 登录态和 REST API Key 鉴权，但还没有多租户、限流和告警。正式部署仍建议把 Web/API 放在内网、VPN、网关或反向代理后面。
 
@@ -88,7 +88,9 @@
 
 ### 2026-04-27 产品化补充
 
-- Web UI 登录态：新增共享登录模块，三套服务统一支持 `/login`、`/logout` 和签名 Cookie 会话；未登录访问 `/`、`/ingest`、`/documents`、`/health/panel`、`/docs` 会跳转登录页，`/health` 保持公开用于探活。
+- Web UI 登录态：新增共享登录模块，三套服务统一支持 `/login`、`/logout` 和签名 Cookie 会话；顶部导航增加“退出登录”入口；未登录访问 `/`、`/ingest`、`/documents`、`/health/panel`、`/logs`、`/docs` 会跳转登录页，`/health` 保持公开用于探活。
+- 日志入库：新增 `audit_logs` 表，登录、登出、鉴权失败、写入、上传、删除、清空、重建索引等关键事件写入 PostgreSQL；普通访问日志不入库，交给 Docker / Nginx / 日志系统。
+- Web 日志页：新增 `/logs`，支持查看审计日志、搜索日志、错误日志和导入任务摘要，便于上线后排障和追责。
 - 鉴权分层：浏览器页面使用 `WEB_*` 配置；REST API 仍使用 `AUTH_ENABLED`、`API_KEY`、`API_KEY_HEADER`，两者互不替代。
 - 配置模板：根 `.env.example` 和三套 service `.env.example` 补齐 Web UI 登录态、PostgreSQL、Compose profiles、向量后端端口和模型离线加载配置。
 - 文档整理：根 README 增加配置总览和文档索引，`docs/postgres.md`、`docs/api-reference.md`、`docs/apipost-swagger-testing.md` 同步说明 Web 登录态与 API Key 的使用边界。
@@ -259,6 +261,13 @@ WEB_SESSION_SECRET=change_me_to_a_long_random_session_secret
 
 - 展示数据库状态、模型状态、元数据数量、向量数量
 - 展示当前后端最近错误，便于定位搜索、写入、重建失败
+
+日志页支持：
+
+- `/logs?kind=audit` 查看登录、鉴权失败、写入、删除、清空、重建等审计事件
+- `/logs?kind=search` 查看当前后端搜索日志、过滤条件、结果数和延迟
+- `/logs?kind=errors` 查看应用错误
+- `/logs?kind=imports` 查看批量导入任务摘要和失败行下载入口
 
 写入页支持：
 
@@ -461,7 +470,7 @@ P0 相关接口已经统一到三套服务：
 | `GET` | `/api/import-jobs/{job_id}` | 查看批量导入任务状态 |
 | `GET` | `/api/import-jobs/{job_id}/failed-rows` | 下载批量导入失败行 CSV |
 
-搜索审计日志和应用层错误会写入 PostgreSQL，用于健康面板展示最近错误和排查慢查询。
+搜索日志、审计日志和应用层错误会写入 PostgreSQL，用于日志页展示、健康面板展示最近错误和排查慢查询。
 
 **响应：**
 
@@ -600,7 +609,7 @@ Memory: +42MB
 | `data/sample_zh.json` | 10 | 中文 | 中文语义检索示例数据，不含 `category` 字段 |
 | `data/sample_large_en.json` | 100 | 英文 | 8 个分类（technology / science / geography / history / food / sports / art / nature），ID 从 101 起，适合演示过滤检索 |
 
-通过 Web UI 或 REST API 写入的自定义文本会先写入 PostgreSQL `documents` 表，并记录向量同步状态；搜索日志、应用错误和导入任务摘要会写入 PostgreSQL，导入失败行 CSV 会写入 `data/import_reports/`。本地运行产物已加入 `.gitignore`，不会进仓库。
+通过 Web UI 或 REST API 写入的自定义文本会先写入 PostgreSQL `documents` 表，并记录向量同步状态；审计日志、搜索日志、应用错误和导入任务摘要会写入 PostgreSQL，导入失败行 CSV 会写入 `data/import_reports/`。本地运行产物已加入 `.gitignore`，不会进仓库。
 
 ---
 

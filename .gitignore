@@ -49,5 +49,6 @@ data/user_data.json
 data/documents.json
 data/search_logs.jsonl
 data/app_errors.jsonl
+data/audit_logs.jsonl
 data/import_reports/
 data/postgres/

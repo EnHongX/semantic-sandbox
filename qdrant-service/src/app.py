@@ -37,8 +37,10 @@ if str(_ROOT_DIR) not in sys.path:
 
 from semantic_sandbox_common import (  # noqa: E402
     add_documents,
+    append_audit_log,
     append_error_log,
     append_search_log,
+    actor_from_request,
     available_categories,
     build_documents_from_rows,
     build_documents_from_texts,
@@ -54,13 +56,19 @@ from semantic_sandbox_common import (  # noqa: E402
     get_documents_by_ids,
     import_job_failed_rows_path,
     list_documents,
+    list_audit_logs,
+    list_error_logs,
+    list_import_jobs,
+    list_search_logs,
     load_import_job,
     load_documents,
     normalize_search_filters,
     parse_tags,
     parse_upload_rows,
     recent_errors,
+    request_log_context,
     summarize_import_errors,
+    truncate_text,
     update_document,
 )
 from semantic_sandbox_auth import install_api_key_auth  # noqa: E402
@@ -128,6 +136,40 @@ def _log_error(*, operation: str, surface: str, exc: Exception, **extra: object)
         "error": str(exc),
         **extra,
     })
+
+
+def _log_audit(
+    request: Request,
+    *,
+    event: str,
+    level: str = "info",
+    target_type: str = "",
+    target_id: str | int = "",
+    **metadata: object,
+) -> None:
+    append_audit_log({
+        **request_log_context(request),
+        "event": event,
+        "level": level,
+        "actor": actor_from_request(request),
+        "backend": BACKEND,
+        "target_type": target_type,
+        "target_id": str(target_id or ""),
+        "metadata": metadata,
+    })
+
+
+def _logs_snapshot(kind: str, limit: int) -> dict:
+    limit = min(max(int(limit or 50), 1), 200)
+    kind = kind if kind in {"audit", "search", "errors", "imports"} else "audit"
+    return {
+        "kind": kind,
+        "limit": limit,
+        "audit_logs": list_audit_logs(backend=BACKEND, limit=limit) if kind == "audit" else [],
+        "search_logs": list_search_logs(backend=BACKEND, limit=limit) if kind == "search" else [],
+        "error_logs": list_error_logs(backend=BACKEND, limit=limit) if kind == "errors" else [],
+        "import_jobs": list_import_jobs(limit=limit) if kind == "imports" else [],
+    }
 
 
 def _parse_selected_ids(raw: str) -> list[int]:
@@ -339,7 +381,7 @@ async def health():
     ),
     tags=["数据写入"],
 )
-async def api_ingest(req: IngestRequest) -> IngestResponse:
+async def api_ingest(request: Request, req: IngestRequest) -> IngestResponse:
     new_records, existing = build_documents_from_texts(
         req.texts,
         seed_files=[DATA_FILE],
@@ -348,6 +390,13 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
         tags=req.tags,
     )
     if not new_records:
+        _log_audit(
+            request,
+            event="documents_ingest_skipped",
+            target_type="documents",
+            skipped=len(existing),
+            source=req.source,
+        )
         return IngestResponse(
             inserted=0,
             ids=[],
@@ -360,6 +409,17 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
         ensure_collection(client, embedding_dim())
         upsert(client, new_records)
         add_documents(new_records)
+        _log_audit(
+            request,
+            event="documents_ingested",
+            target_type="documents",
+            inserted=len(new_records),
+            skipped=len(existing),
+            record_ids=[int(r["id"]) for r in new_records],
+            source=req.source,
+            category=req.category,
+            tags=req.tags,
+        )
         return IngestResponse(
             inserted=len(new_records),
             ids=[r["id"] for r in new_records],
@@ -381,7 +441,7 @@ async def api_ingest(req: IngestRequest) -> IngestResponse:
     ),
     tags=["数据写入"],
 )
-async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
+async def api_upload(request: Request, file: UploadFile = File(...)) -> IngestResponse:
     content = await file.read()
     try:
         records_raw = parse_upload_rows(content, file.filename or "")
@@ -406,6 +466,16 @@ async def api_upload(file: UploadFile = File(...)) -> IngestResponse:
         inserted=len(new_records),
         existing=existing,
         errors=error_details,
+    )
+    _log_audit(
+        request,
+        event="documents_uploaded",
+        target_type="import_job",
+        target_id=job["job_id"],
+        filename=file.filename or "",
+        inserted=len(new_records),
+        skipped=len(existing),
+        failed=len(errors),
     )
     return IngestResponse(
         inserted=len(new_records),
@@ -491,7 +561,7 @@ async def api_count() -> dict:
     summary="删除指定 ID 的记录",
     tags=["数据写入"],
 )
-async def api_delete_record(record_id: int) -> dict:
+async def api_delete_record(request: Request, record_id: int) -> dict:
     client = _get_client()
     try:
         client.delete(
@@ -499,6 +569,7 @@ async def api_delete_record(record_id: int) -> dict:
             points_selector=qm.PointIdsList(points=[record_id]),
         )
         delete_document(record_id)
+        _log_audit(request, event="document_deleted", target_type="document", target_id=record_id)
         return {"deleted": record_id}
     finally:
         client.close()
@@ -510,12 +581,13 @@ async def api_delete_record(record_id: int) -> dict:
     description="删除并重建当前 Qdrant collection，同时清空 PostgreSQL 文档元数据。",
     tags=["数据写入"],
 )
-async def api_clear_records() -> dict:
+async def api_clear_records(request: Request) -> dict:
     client = _get_client()
     try:
         client.delete_collection(collection_name=COLLECTION_NAME)
         ensure_collection(client, embedding_dim())
         clear_documents()
+        _log_audit(request, event="documents_cleared", level="warning", target_type="documents", collection=COLLECTION_NAME)
         return {"cleared": True}
     finally:
         client.close()
@@ -548,7 +620,7 @@ async def api_document_detail(record_id: int) -> dict:
     summary="更新文档并重建向量",
     tags=["文档管理"],
 )
-async def api_update_document(record_id: int, req: DocumentUpdate) -> dict:
+async def api_update_document(request: Request, record_id: int, req: DocumentUpdate) -> dict:
     client = _get_client()
     try:
         ensure_collection(client, embedding_dim())
@@ -559,6 +631,16 @@ async def api_update_document(record_id: int, req: DocumentUpdate) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         upsert(client, [doc])
+        _log_audit(
+            request,
+            event="document_updated",
+            target_type="document",
+            target_id=record_id,
+            category=req.category,
+            tags=req.tags,
+            source=req.source,
+            text_preview=truncate_text(req.text, 100),
+        )
         return doc
     finally:
         client.close()
@@ -569,8 +651,8 @@ async def api_update_document(record_id: int, req: DocumentUpdate) -> dict:
     summary="删除文档和向量",
     tags=["文档管理"],
 )
-async def api_delete_document(record_id: int) -> dict:
-    return await api_delete_record(record_id)
+async def api_delete_document(request: Request, record_id: int) -> dict:
+    return await api_delete_record(request, record_id)
 
 
 @app.post(
@@ -578,7 +660,7 @@ async def api_delete_document(record_id: int) -> dict:
     summary="批量删除文档和向量",
     tags=["文档管理"],
 )
-async def api_batch_delete_documents(req: BatchDocumentRequest) -> dict:
+async def api_batch_delete_documents(request: Request, req: BatchDocumentRequest) -> dict:
     record_ids = sorted({int(item) for item in req.record_ids if int(item) > 0})
     if not record_ids:
         raise HTTPException(status_code=400, detail="请至少选择一条文档")
@@ -589,6 +671,15 @@ async def api_batch_delete_documents(req: BatchDocumentRequest) -> dict:
             points_selector=qm.PointIdsList(points=record_ids),
         )
         deleted = delete_documents(record_ids)
+        _log_audit(
+            request,
+            event="documents_batch_deleted",
+            level="warning",
+            target_type="documents",
+            requested=len(record_ids),
+            deleted=deleted,
+            record_ids=record_ids,
+        )
         return {"requested": len(record_ids), "deleted": deleted, "record_ids": record_ids}
     finally:
         client.close()
@@ -599,7 +690,7 @@ async def api_batch_delete_documents(req: BatchDocumentRequest) -> dict:
     summary="批量重建所选文档的向量",
     tags=["文档管理"],
 )
-async def api_batch_reindex_documents(req: BatchDocumentRequest) -> dict:
+async def api_batch_reindex_documents(request: Request, req: BatchDocumentRequest) -> dict:
     record_ids = sorted({int(item) for item in req.record_ids if int(item) > 0})
     if not record_ids:
         raise HTTPException(status_code=400, detail="请至少选择一条文档")
@@ -610,6 +701,14 @@ async def api_batch_reindex_documents(req: BatchDocumentRequest) -> dict:
     try:
         ensure_collection(client, embedding_dim())
         upsert(client, docs)
+        _log_audit(
+            request,
+            event="documents_batch_reindexed",
+            target_type="documents",
+            requested=len(record_ids),
+            reindexed=len(docs),
+            record_ids=[int(doc["id"]) for doc in docs],
+        )
         return {"requested": len(record_ids), "reindexed": len(docs), "record_ids": [int(doc["id"]) for doc in docs]}
     finally:
         client.close()
@@ -632,10 +731,11 @@ def _reindex_all(client: QdrantClient) -> int:
     summary="按 PostgreSQL 文档元数据重建当前向量库集合",
     tags=["文档管理"],
 )
-async def api_reindex() -> dict:
+async def api_reindex(request: Request) -> dict:
     client = _get_client()
     try:
         indexed = _reindex_all(client)
+        _log_audit(request, event="documents_reindexed", target_type="collection", target_id=COLLECTION_NAME, indexed=indexed)
         return {"indexed": indexed, "collection": COLLECTION_NAME}
     finally:
         client.close()
@@ -819,6 +919,18 @@ async def health_panel_page(request: Request):
     )
 
 
+@app.get("/logs", response_class=HTMLResponse, include_in_schema=False)
+async def logs_page(request: Request, kind: str = "audit", limit: int = 50):
+    return templates.TemplateResponse(
+        "logs.html",
+        {
+            "request": request,
+            "backend": BACKEND,
+            "logs": _logs_snapshot(kind, limit),
+        },
+    )
+
+
 @app.post("/documents/{record_id}/update", response_class=HTMLResponse, include_in_schema=False)
 async def update_document_form(
     request: Request,
@@ -841,6 +953,16 @@ async def update_document_form(
             "source": source,
         })
         upsert(client, [doc])
+        _log_audit(
+            request,
+            event="document_updated",
+            target_type="document",
+            target_id=record_id,
+            category=category,
+            tags=parse_tags(tags),
+            source=source,
+            text_preview=truncate_text(text, 100),
+        )
         message = f"已更新文档 {record_id} 并重建向量"
     except Exception as exc:
         error = _fmt_exc(exc)
@@ -865,6 +987,7 @@ async def delete_document_form(
             points_selector=qm.PointIdsList(points=[record_id]),
         )
         delete_document(record_id)
+        _log_audit(request, event="document_deleted", level="warning", target_type="document", target_id=record_id)
         message = f"已删除文档 {record_id}"
     except Exception as exc:
         error = _fmt_exc(exc)
@@ -884,6 +1007,7 @@ async def reindex_form(
     client = _get_client()
     try:
         indexed = _reindex_all(client)
+        _log_audit(request, event="documents_reindexed", target_type="collection", target_id=COLLECTION_NAME, indexed=indexed)
         message = f"已重建集合 {COLLECTION_NAME}，写入 {indexed} 条文档"
     except Exception as exc:
         error = _fmt_exc(exc)
@@ -912,6 +1036,15 @@ async def batch_delete_documents_form(
             points_selector=qm.PointIdsList(points=record_ids),
         )
         deleted = delete_documents(record_ids)
+        _log_audit(
+            request,
+            event="documents_batch_deleted",
+            level="warning",
+            target_type="documents",
+            requested=len(record_ids),
+            deleted=deleted,
+            record_ids=record_ids,
+        )
         message = f"已批量删除 {deleted} 条文档"
     except Exception as exc:
         error = _fmt_exc(exc)
@@ -941,6 +1074,14 @@ async def batch_reindex_documents_form(
     try:
         ensure_collection(client, embedding_dim())
         upsert(client, docs)
+        _log_audit(
+            request,
+            event="documents_batch_reindexed",
+            target_type="documents",
+            requested=len(record_ids),
+            reindexed=len(docs),
+            record_ids=[int(doc["id"]) for doc in docs],
+        )
         message = f"已批量重建 {len(docs)} 条文档向量"
     except Exception as exc:
         error = _fmt_exc(exc)
@@ -971,6 +1112,15 @@ async def ingest_form(
                         add_documents(new_records)
                 finally:
                     client.close()
+            _log_audit(
+                request,
+                event="documents_ingested",
+                target_type="documents",
+                inserted=len(new_records),
+                skipped=len(existing),
+                record_ids=[int(r["id"]) for r in new_records],
+                source="web",
+            )
             message = _message_for_ingest(new_records, existing)
     except Exception as exc:
         error = _fmt_exc(exc)
@@ -1006,6 +1156,16 @@ async def upload_form(request: Request, file: UploadFile = File(...)):
             inserted=len(new_records),
             existing=existing,
             errors=error_details,
+        )
+        _log_audit(
+            request,
+            event="documents_uploaded",
+            target_type="import_job",
+            target_id=import_status["job_id"],
+            filename=file.filename or "",
+            inserted=len(new_records),
+            skipped=len(existing),
+            failed=len(errors),
         )
         message = _message_for_ingest(new_records, existing, failed=len(errors))
     except Exception as exc:

@@ -45,6 +45,8 @@ make web
 5. 导入完成后，接口会按 Swagger 分组显示。
 
 > 注意：`/docs` 是 Swagger 页面，给人看的；`/openapi.json` 是 OpenAPI 定义，给工具导入用。
+>
+> 如果 `.env` 开启了 `WEB_AUTH_ENABLED=1`，`/docs` 和 `/openapi.json` 会先要求 Web 登录。ApiPost 直接 URL 导入受限时，开发环境可临时设 `WEB_AUTH_ENABLED=0` 重新启动服务后导入；生产环境不要为了导入接口长期关闭 Web 登录态。
 
 ### 3.3 建议配置环境变量
 
@@ -92,7 +94,7 @@ X-API-Key: {{api_key}}
 |---|---|
 | Method | `GET` |
 | URL | `{{qdrant_base_url}}/api/health/panel` |
-| Headers | 无特殊要求 |
+| Headers | `X-API-Key: {{api_key}}` |
 | Body | 无 |
 
 预期响应重点：
@@ -124,7 +126,7 @@ make ps
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/ingest` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -172,7 +174,7 @@ Body：
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/search` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -226,7 +228,7 @@ Body：
 |---|---|
 | Method | `GET` |
 | URL | `{{qdrant_base_url}}/api/documents?offset=0&limit=10` |
-| Headers | 无特殊要求 |
+| Headers | `X-API-Key: {{api_key}}` |
 | Body | 无 |
 
 预期响应：
@@ -259,7 +261,7 @@ Body：
 |---|---|
 | Method | `PUT` |
 | URL | `{{qdrant_base_url}}/api/documents/11` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -300,6 +302,7 @@ Body：
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/upload` |
+| Headers | `X-API-Key: {{api_key}}` |
 | Body 类型 | `form-data` |
 
 ApiPost Body 配置：
@@ -378,7 +381,7 @@ text,document_id,category,tags,source
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/documents/batch-reindex` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：

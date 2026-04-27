@@ -369,6 +369,8 @@ uvicorn src.app:app --reload --port 8890
 | <http://localhost:8890/health/panel> | 健康面板（DB / 模型 / 记录数 / 最近错误） |
 | <http://localhost:8890/docs> | Swagger API 文档 |
 
+开启 `WEB_AUTH_ENABLED=1` 后，Web UI、Swagger UI 和 HTML 表单提交需要先访问 `/login` 登录；退出访问 `/logout`。程序调用 `/api/*` 仍使用 `AUTH_ENABLED` / `API_KEY` / `API_KEY_HEADER`。
+
 ---
 
 ### REST API 说明

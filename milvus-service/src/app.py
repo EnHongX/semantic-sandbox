@@ -64,6 +64,7 @@ from semantic_sandbox_common import (  # noqa: E402
 )
 from semantic_sandbox_auth import install_api_key_auth  # noqa: E402
 from semantic_sandbox_postgres import check_connection, postgres_enabled  # noqa: E402
+from semantic_sandbox_web_auth import install_web_login_auth  # noqa: E402
 
 BACKEND = "milvus"
 
@@ -78,6 +79,7 @@ app = FastAPI(
 )
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 install_api_key_auth(app)
+install_web_login_auth(app)
 
 
 # ─── 工具函数 ──────────────────────────────────────────────────────────────────

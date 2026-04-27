@@ -4,7 +4,7 @@
 
 本文档以 `qdrant-service` 为基准，覆盖当前 REST API 的请求代码、参数、正确请求、正确响应和常见错误。`weaviate-service`、`milvus-service` 的接口路径与请求/响应结构保持一致，差异见“多后端差异”。
 
-说明：本文档覆盖 API 对接路径；`/`、`/ingest`、`/documents`、`/health/panel` 等 HTML 页面和表单提交路由属于 Web UI 内部路由，不作为前端 API 对接接口。
+说明：本文档覆盖 API 对接路径；`/`、`/ingest`、`/documents`、`/health/panel` 等 HTML 页面和表单提交路由属于 Web UI 内部路由，不作为前端 API 对接接口。开启 `WEB_AUTH_ENABLED=1` 后，浏览器页面、Swagger UI 和 `/openapi.json` 需要先通过 `/login` 登录。
 
 ## 1. 基础信息
 
@@ -30,7 +30,7 @@ make web
 
 | 项 | 说明 |
 |---|---|
-| 鉴权 | REST API 默认使用 `X-API-Key`。`/health`、`GET /api/count`、`GET /api/model/status`、`GET /api/samples/{lang}` 保持公开，便于探活和 Web UI 基础读取。 |
+| 鉴权 | REST API 默认使用 `X-API-Key`。Web UI 使用签名 Cookie 登录态。`/health`、`GET /api/count`、`GET /api/model/status`、`GET /api/samples/{lang}` 保持公开，便于探活和 Web UI 基础读取。 |
 | 请求格式 | JSON 接口使用 `Content-Type: application/json`。文件上传接口使用 `multipart/form-data`。 |
 | 响应格式 | 默认 JSON；失败行下载接口返回 `text/csv`。 |
 | ID 规则 | 文档 ID 由 PostgreSQL 自增主键分配。 |
@@ -83,6 +83,17 @@ HEADERS = {"X-API-Key": "change_me_to_a_long_random_secret"}
 ```js
 const HEADERS = {"X-API-Key": "change_me_to_a_long_random_secret"};
 ```
+
+Web UI 登录态使用单独配置，不替代 REST API Key：
+
+```env
+WEB_AUTH_ENABLED=1
+WEB_USERNAME=admin
+WEB_PASSWORD=change_me_to_a_strong_password
+WEB_SESSION_SECRET=change_me_to_a_long_random_session_secret
+```
+
+浏览器访问 `/docs` 或 `/openapi.json` 如果被重定向到 `/login`，先登录即可；ApiPost、curl、后端服务调用仍应直接访问 `/api/*` 并携带 `X-API-Key`。
 
 后文每个接口的“正确请求”代码块顺序固定为：`curl`、`Python requests`、浏览器 `fetch`、`Node.js 18+ fetch`。
 

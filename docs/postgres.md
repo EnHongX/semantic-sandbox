@@ -40,6 +40,12 @@ COMPOSE_PROFILES=qdrant,weaviate,milvus
 | `AUTH_ENABLED` | 是否启用 REST API Key 鉴权 |
 | `API_KEY` | REST API 请求使用的密钥 |
 | `API_KEY_HEADER` | API Key 请求头名，默认 `X-API-Key` |
+| `WEB_AUTH_ENABLED` | 是否启用 Web UI 登录态 |
+| `WEB_USERNAME` / `WEB_PASSWORD` | Web UI 登录账号密码 |
+| `WEB_SESSION_SECRET` | 签名 Cookie 使用的会话密钥，生产必须替换 |
+| `WEB_SESSION_COOKIE` | Web UI 会话 Cookie 名 |
+| `WEB_SESSION_MAX_AGE_SECONDS` | Web UI 会话有效期，默认 86400 秒 |
+| `WEB_SESSION_HTTPS_ONLY` | HTTPS-only Cookie 开关；本地 HTTP 调试用 `0`，HTTPS 反代后用 `1` |
 | `DB_POOL_SIZE` | 常驻连接池大小 |
 | `DB_MAX_OVERFLOW` | 连接池峰值溢出连接数 |
 | `DB_STATEMENT_TIMEOUT_MS` | 单条 SQL 超时，避免慢查询拖死 API |

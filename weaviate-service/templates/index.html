@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% set active = "search" %}
+{% block title %}语义搜索 · Weaviate Service{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <div class="eyebrow-row">
+    <span class="eyebrow">Search Console</span>
+    <a href="/docs#/语义搜索/api_search_api_search_post" class="docs-link">POST /api/search</a>
+  </div>
+  <div class="hero-grid">
+    <div>
+      <h1 class="page-title">统一语义检索工作台</h1>
+      <p class="page-summary">
+        这一版不是单纯换皮，而是把 ClickHouse 的数据仪表盘张力、Linear 的控制台秩序、Mintlify 的文档可读性压成一套共享布局。
+        三套向量库都共用同一套信息架构，便于横向对比检索表现。
+      </p>
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span class="metric-label">交互模式</span>
+          <strong class="metric-value">Semantic Search</strong>
+          <span class="metric-note">支持多分类、标签、时间范围过滤，以及结果解释。</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">审计能力</span>
+          <strong class="metric-value">Query Logged</strong>
+          <span class="metric-note">搜索请求会落 query、limit、filter、结果数量与耗时。</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">数据状态</span>
+          <strong class="metric-value" id="db-count-value">加载中</strong>
+          <span class="metric-note" id="db-count-note">正在读取当前集合文档总数。</span>
+        </div>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="side-note">
+        <strong>检索面板</strong>
+        <p>默认保留最小可行参数，只暴露最常用的查询、返回条数和分类过滤，不把高级配置先塞进首屏。</p>
+      </div>
+      <div class="side-note">
+        <strong>共享产品壳</strong>
+        <ul class="helper-list">
+          <li>顶部导航、页面层级、组件样式三套服务一致。</li>
+          <li>不同实现只通过顶部后端标识区分，不再拆三种视觉风格。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">查询配置</h2>
+      <div class="section-note">在首屏直接给出 P1 需要的多分类、标签和时间过滤，不再把过滤能力藏到 API 层。</div>
+    </div>
+  </div>
+  <form method="post" action="/search" class="stack">
+    <div class="form-grid" style="grid-template-columns:minmax(0,1.8fr) minmax(120px,.5fr)">
+      <div>
+        <label for="query">输入查询文本</label>
+        <input type="text" name="query" id="query"
+               placeholder="例如：法国著名建筑"
+               value="{{ query or '' }}" required autofocus>
+      </div>
+      <div>
+        <label for="limit">返回条数</label>
+        <input type="number" name="limit" id="limit"
+               value="{{ limit or 5 }}" min="1" max="20">
+      </div>
+    </div>
+    <div class="split-grid">
+      <div>
+        <label>分类过滤（可多选）</label>
+        {% if category_options %}
+        <div class="filter-choice-grid" role="group" aria-label="分类过滤">
+          {% for option in category_options or [] %}
+          <label class="filter-choice">
+            <input type="checkbox" name="categories" value="{{ option }}" {% if option in (selected_categories or []) %}checked{% endif %}>
+            <span class="filter-choice-label">{{ option }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <p class="hint">直接点击分类即可切换，不需要按住 <code>Ctrl</code> / <code>Cmd</code>。</p>
+        {% else %}
+        <div class="empty-state">当前暂无可筛选分类，先导入带 <code>category</code> 字段的数据。</div>
+        {% endif %}
+      </div>
+      <div class="stack">
+        <div>
+          <label for="tags">标签过滤（任一命中）</label>
+          <input type="text" name="tags" id="tags" value="{{ tags_text or '' }}" placeholder="例如：travel, europe">
+        </div>
+        <div class="split-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+          <div>
+            <label for="created_at_from">创建时间起点</label>
+            <input type="datetime-local" name="created_at_from" id="created_at_from" value="{{ created_at_from or '' }}">
+          </div>
+          <div>
+            <label for="created_at_to">创建时间终点</label>
+            <input type="datetime-local" name="created_at_to" id="created_at_to" value="{{ created_at_to or '' }}">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="action-row">
+      <button type="submit" class="btn">搜索</button>
+      {% if active_filter %}
+      <div class="result-meta">
+        {% for item in active_filter.categories or [] %}
+        <span class="tag-badge">category={{ item }}</span>
+        {% endfor %}
+        {% for item in active_filter.tags or [] %}
+        <span class="tag-badge">tag={{ item }}</span>
+        {% endfor %}
+        {% if active_filter.created_at_from %}
+        <span class="id-badge">from={{ active_filter.created_at_from }}</span>
+        {% endif %}
+        {% if active_filter.created_at_to %}
+        <span class="id-badge">to={{ active_filter.created_at_to }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <p class="hint">查询词和过滤条件会进入搜索审计日志。时间范围按 `created_at` 过滤，标签命中规则为“任一命中”。</p>
+  </form>
+</section>
+
+{% if results is defined %}
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">检索结果</h2>
+      <div class="section-note">
+        {% if query %}
+        查询「{{ query }}」，返回 {{ results | length }} 条结果
+        {% else %}
+        先输入 query 再执行检索。
+        {% endif %}
+      </div>
+    </div>
+    {% if query %}
+    <span class="mono-label">limit {{ limit or 5 }}</span>
+    {% endif %}
+  </div>
+  {% if query and results %}
+  <div class="result-list">
+    {% for r in results %}
+    <div class="result-item">
+      <div class="document-header">
+        <div class="result-meta">
+          <span class="score-badge">score {{ r.score }}</span>
+          <span class="id-badge">id={{ r.id }}</span>
+          {% if r.category %}
+          <span class="tag-badge">{{ r.category }}</span>
+          {% endif %}
+        {% if r.source %}
+        <span class="id-badge">{{ r.source }}</span>
+        {% endif %}
+        <span class="id-badge">{{ (r.text or '') | length }} 字</span>
+      </div>
+      <span class="mono-label">top {{ loop.index }}</span>
+      </div>
+      <div class="result-text">{{ r.snippet or r.text }}</div>
+      <div class="result-explain">
+        命中词：
+        {% if r.matched_terms %}
+        {{ r.matched_terms | join('、') }}
+        {% else %}
+        无显式词面命中，属于语义召回
+        {% endif %}
+        <br>
+        score 说明：{{ r.score_explanation }}
+      </div>
+      {% if r.tags %}
+      <div class="result-meta" style="margin-top:10px">
+        {% for tag in r.tags %}
+        <span class="tag-badge">{{ tag }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <details style="margin-top:12px">
+        <summary class="muted-link" style="cursor:pointer">查看原文 · {{ (r.text or '') | length }} 字</summary>
+        <div class="snippet-text" style="margin-top:10px">{{ r.text }}</div>
+      </details>
+    </div>
+    {% endfor %}
+  </div>
+  {% elif query %}
+  <div class="empty-state">没有找到相关内容，先去 <a href="/ingest">写入数据</a>，再回来搜索。</div>
+  {% else %}
+  <div class="empty-state">从上面的查询框开始。这个页面只保留检索产品最核心的首屏动作，不混入导入和运维操作。</div>
+  {% endif %}
+</section>
+{% else %}
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">使用说明</h2>
+      <div class="section-note">统一界面之下，三套向量库只比较能力，不比较页面结构。</div>
+    </div>
+  </div>
+  <div class="helper-grid">
+    <div class="info-card">
+      <strong>先搜再调</strong>
+      <p class="section-note">先用真实 query 验证召回和过滤，再决定是否做更重的解释层和重排层，避免方向未定先堆功能。</p>
+    </div>
+    <div class="info-card">
+      <strong>结果高亮</strong>
+      <p class="section-note">命中词会在结果正文里高亮，便于快速判断向量命中是否合理。</p>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<script>
+fetch('/api/count').then(r => r.json()).then(d => {
+  const value = document.getElementById('db-count-value');
+  const note = document.getElementById('db-count-note');
+  if (d.count === 0) {
+    value.textContent = '0 records';
+    note.innerHTML = '当前向量库为空，先去 <a href="/ingest" class="muted-link">写入数据</a>。';
+  } else {
+    value.textContent = d.count + ' records';
+    note.textContent = '当前库中共有 ' + d.count + ' 条记录，可直接进行检索验证。';
+  }
+}).catch(() => {
+  const value = document.getElementById('db-count-value');
+  const note = document.getElementById('db-count-note');
+  value.textContent = 'Unavailable';
+  note.textContent = '计数接口暂时不可用，但不影响直接搜索。';
+});
+
+function queryTerms(query, text) {
+  const normalizedQuery = (query || '').trim();
+  const lowerText = (text || '').toLowerCase();
+  if (!normalizedQuery || !lowerText) return [];
+
+  const terms = new Set();
+  const add = (term) => {
+    const value = term.trim();
+    if (value.length >= 2 && lowerText.includes(value.toLowerCase())) {
+      terms.add(value);
+    }
+  };
+
+  add(normalizedQuery);
+  normalizedQuery.split(/[\s,，。.!?！？;；:：、'"“”‘’()[\]{}<>《》【】]+/).forEach(add);
+
+  if (terms.size === 0) {
+    const maxLen = Math.min(normalizedQuery.length, 8);
+    for (let len = maxLen; len >= 2; len--) {
+      for (let i = 0; i <= normalizedQuery.length - len; i++) {
+        add(normalizedQuery.slice(i, i + len));
+      }
+      if (terms.size > 0) break;
+    }
+  }
+
+  return Array.from(terms).sort((a, b) => b.length - a.length);
+}
+
+function highlightText(element, terms) {
+  const text = element.textContent;
+  if (!text || terms.length === 0) return;
+
+  const lowerText = text.toLowerCase();
+  const ranges = [];
+  terms.forEach((term) => {
+    const lowerTerm = term.toLowerCase();
+    let index = lowerText.indexOf(lowerTerm);
+    while (index !== -1) {
+      ranges.push({start: index, end: index + lowerTerm.length});
+      index = lowerText.indexOf(lowerTerm, index + lowerTerm.length);
+    }
+  });
+
+  const selected = [];
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end).forEach((range) => {
+    if (!selected.some((item) => range.start < item.end && range.end > item.start)) {
+      selected.push(range);
+    }
+  });
+  if (selected.length === 0) return;
+
+  element.textContent = '';
+  let cursor = 0;
+  selected.forEach((range) => {
+    if (range.start > cursor) element.append(document.createTextNode(text.slice(cursor, range.start)));
+    const mark = document.createElement('mark');
+    mark.className = 'keyword-hit';
+    mark.textContent = text.slice(range.start, range.end);
+    element.append(mark);
+    cursor = range.end;
+  });
+  if (cursor < text.length) element.append(document.createTextNode(text.slice(cursor)));
+}
+
+const currentQuery = document.getElementById('query')?.value || '';
+document.querySelectorAll('.result-text, .snippet-text').forEach((element) => {
+  highlightText(element, queryTerms(currentQuery, element.textContent));
+});
+</script>
+
+{% endblock %}

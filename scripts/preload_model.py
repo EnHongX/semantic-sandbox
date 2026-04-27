@@ -1,5 +1,5 @@
 """
-预下载两个嵌入模型到本地缓存，避免第一次跑 demo 时卡在下载。
+预下载两个嵌入模型到本地缓存，避免第一次运行服务 时卡在下载。
 
 用法：
     pip install sentence-transformers python-dotenv

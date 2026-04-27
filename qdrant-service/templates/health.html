@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% set active = "health" %}
+{% block title %}健康面板 · {{ health.backend | capitalize }} Service{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <div class="eyebrow-row">
+    <span class="eyebrow">Health Panel</span>
+    <a href="/api/health/panel" class="docs-link">GET /api/health/panel</a>
+  </div>
+  <div class="hero-grid">
+    <div>
+      <h1 class="page-title">运行状态与错误面板</h1>
+      <p class="page-summary">
+        这里把 P1 运维面板压成最小可用版：数据库状态、模型状态、文档数量、向量数量，以及最近错误。
+      </p>
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span class="metric-label">数据库状态</span>
+          <strong class="metric-value">{{ "Healthy" if health.db.ok else "Degraded" }}</strong>
+          <span class="metric-note">{{ health.db.detail }}</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">模型状态</span>
+          <strong class="metric-value">{{ "Loaded" if health.model.loaded else "Not Ready" }}</strong>
+          <span class="metric-note">{{ health.model.model }} / dim={{ health.model.dimension or '未知' }}</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">记录规模</span>
+          <strong class="metric-value">{{ health.metadata_count }}</strong>
+          <span class="metric-note">metadata={{ health.metadata_count }}，vector={{ health.vector_count }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="side-note">
+        <strong>后端识别</strong>
+        <p>当前面板读取的是 {{ health.backend }} 实例的实时状态，便于对比三套向量库实现。</p>
+      </div>
+      <div class="side-note">
+        <strong>错误口径</strong>
+        <p>最近错误来自共享错误日志，只保留当前后端的最近记录，用于快速定位搜索、写入、重建失败。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">核心状态</h2>
+      <div class="section-note">优先展示最影响上线可用性的状态，而不是堆过多内部指标。</div>
+    </div>
+  </div>
+  <div class="helper-grid" style="margin-top:18px">
+    <div class="info-card">
+      <strong>数据库</strong>
+      <div class="stat-strip">
+        <div class="stat-chip">
+          <span class="section-note">连接</span>
+          <strong>{{ "正常" if health.db.ok else "异常" }}</strong>
+        </div>
+        <div class="stat-chip">
+          <span class="section-note">集合</span>
+          <strong>{{ health.db.collection }}</strong>
+        </div>
+      </div>
+      <p class="section-note" style="margin-top:12px">{{ health.db.detail }}</p>
+    </div>
+    <div class="info-card">
+      <strong>模型</strong>
+      <div class="stat-strip">
+        <div class="stat-chip">
+          <span class="section-note">模型名</span>
+          <strong>{{ health.model.model }}</strong>
+        </div>
+        <div class="stat-chip">
+          <span class="section-note">本地模式</span>
+          <strong>{{ health.model.local_only }}</strong>
+        </div>
+        <div class="stat-chip">
+          <span class="section-note">来源路径</span>
+          <strong>{{ health.model.source }}</strong>
+        </div>
+      </div>
+    </div>
+    <div class="info-card">
+      <strong>数据规模</strong>
+      <div class="stat-strip">
+        <div class="stat-chip">
+          <span class="section-note">元数据记录</span>
+          <strong>{{ health.metadata_count }}</strong>
+        </div>
+        <div class="stat-chip">
+          <span class="section-note">向量记录</span>
+          <strong>{{ health.vector_count }}</strong>
+        </div>
+        <div class="stat-chip">
+          <span class="section-note">分类数</span>
+          <strong>{{ (health.category_options or []) | length }}</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">最近错误</h2>
+      <div class="section-note">只保留高价值字段：时间、操作、入口、错误内容。</div>
+    </div>
+  </div>
+  {% if health.recent_errors %}
+  <div class="result-list" style="margin-top:18px">
+    {% for item in health.recent_errors %}
+    <div class="result-item {% if loop.first %}danger-zone{% endif %}">
+      <div class="document-header">
+        <div class="result-meta">
+          <span class="id-badge">{{ item.ts }}</span>
+          <span class="tag-badge">{{ item.operation or 'unknown' }}</span>
+          <span class="mono-label">{{ item.surface or 'system' }}</span>
+        </div>
+        <span class="mono-label">{{ item.backend }}</span>
+      </div>
+      <div class="result-text">{{ item.error }}</div>
+      {% if item.query or item.record_id or item.filename %}
+      <div class="result-explain">
+        {% if item.query %}query={{ item.query }}{% endif %}
+        {% if item.record_id %}{% if item.query %}<br>{% endif %}record_id={{ item.record_id }}{% endif %}
+        {% if item.filename %}{% if item.query or item.record_id %}<br>{% endif %}filename={{ item.filename }}{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state" style="margin-top:18px">当前没有记录到错误。这里为空不代表没有风险，只表示应用层最近没有落异常日志。</div>
+  {% endif %}
+</section>
+
+{% endblock %}

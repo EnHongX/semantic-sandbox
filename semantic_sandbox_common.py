@@ -1,4 +1,4 @@
-"""Shared metadata helpers for the vector database demos.
+"""Shared metadata helpers for the vector database services.
 
 This keeps product-facing state outside the vector DB so each backend can be
 rebuilt from the same document metadata.
@@ -32,6 +32,18 @@ DEFAULT_CATEGORY_OPTIONS = [
     "nature",
 ]
 _TERM_SPLIT_RE = re.compile(r"[\s,，。.!?！？;；:：、'\"“”‘’()\[\]{}<>《》【】]+")
+
+
+def _postgres_enabled() -> bool:
+    from semantic_sandbox_postgres import postgres_enabled
+
+    return postgres_enabled()
+
+
+def _pg():
+    import semantic_sandbox_postgres
+
+    return semantic_sandbox_postgres
 
 
 def utc_now() -> str:
@@ -103,11 +115,15 @@ def document_lookup() -> dict[int, dict]:
 
 
 def get_documents_by_ids(record_ids: Iterable[int]) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().get_documents_by_ids(record_ids)
     wanted = {int(value) for value in record_ids}
     return [doc for doc in load_documents() if int(doc.get("id", 0)) in wanted]
 
 
 def delete_documents(record_ids: Iterable[int]) -> int:
+    if _postgres_enabled():
+        return _pg().delete_documents(record_ids)
     wanted = {int(value) for value in record_ids}
     if not wanted:
         return 0
@@ -194,6 +210,9 @@ def filter_documents(docs: Iterable[dict], filters: dict | None = None) -> list[
 
 
 def append_error_log(entry: dict) -> None:
+    if _postgres_enabled():
+        _pg().save_error_log(entry)
+        return
     ERROR_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {"ts": utc_now(), **entry}
     with ERROR_LOG_FILE.open("a", encoding="utf-8") as f:
@@ -201,6 +220,8 @@ def append_error_log(entry: dict) -> None:
 
 
 def recent_errors(limit: int = 10) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().recent_errors(limit)
     if not ERROR_LOG_FILE.exists():
         return []
     rows: list[dict] = []
@@ -349,6 +370,8 @@ def _legacy_documents() -> list[dict]:
 
 
 def load_documents() -> list[dict]:
+    if _postgres_enabled():
+        return _pg().load_documents()
     docs = _read_json_list(DOCUMENTS_FILE)
     if docs:
         return docs
@@ -359,6 +382,9 @@ def load_documents() -> list[dict]:
 
 
 def save_documents(docs: list[dict]) -> None:
+    if _postgres_enabled():
+        _pg().replace_documents(docs)
+        return
     docs_sorted = sorted(docs, key=lambda item: int(item.get("id", 0)))
     _write_json(DOCUMENTS_FILE, docs_sorted)
     _write_json(USER_DATA_FILE, docs_sorted)
@@ -419,11 +445,20 @@ def build_documents_from_texts(
     category: str = "",
     tags: list[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
+    if _postgres_enabled():
+        return _build_documents_from_texts_postgres(
+            texts,
+            source=source,
+            category=category,
+            tags=tags,
+        )
     docs = load_documents()
     existing_by_hash, existing_by_document_id = _document_indexes(docs)
     next_id = next_record_id(seed_files)
     records: list[dict] = []
     existing_hits: list[dict] = []
+    seen_by_hash: dict[str, dict] = {}
+    seen_by_document_id: dict[str, dict] = {}
     now = utc_now()
 
     for input_index, raw_text in enumerate(texts, start=1):
@@ -461,18 +496,70 @@ def build_documents_from_texts(
     return records, existing_hits
 
 
+def _build_documents_from_texts_postgres(
+    texts: Iterable[str],
+    *,
+    source: str = "api",
+    category: str = "",
+    tags: list[str] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    records: list[dict] = []
+    existing_hits: list[dict] = []
+    seen_by_hash: dict[str, dict] = {}
+    seen_by_document_id: dict[str, dict] = {}
+    now = utc_now()
+
+    for input_index, raw_text in enumerate(texts, start=1):
+        text = normalize_text(raw_text)
+        if not text:
+            continue
+        hash_value = text_hash(text)
+        document_id = make_document_id(hash_value)
+        if hash_value in seen_by_hash:
+            existing_hits.append(_existing_hit(seen_by_hash[hash_value], reason="text_hash", input_index=input_index))
+            continue
+        if document_id in seen_by_document_id:
+            existing_hits.append(
+                _existing_hit(seen_by_document_id[document_id], reason="document_id", input_index=input_index)
+            )
+            continue
+        record = {
+            "document_id": document_id,
+            "text_hash": hash_value,
+            "text": text,
+            "category": category,
+            "tags": tags or [],
+            "source": source,
+            "created_at": now,
+            "updated_at": now,
+        }
+        reason, doc = _pg().insert_document(record)
+        if reason == "inserted":
+            records.append(doc)
+            seen_by_hash[hash_value] = doc
+            seen_by_document_id[document_id] = doc
+        else:
+            existing_hits.append(_existing_hit(doc, reason=reason, input_index=input_index))
+
+    return records, existing_hits
+
+
 def build_documents_from_rows(
     rows: Iterable[dict],
     *,
     seed_files: Iterable[Path],
     default_source: str,
 ) -> tuple[list[dict], list[dict], list[dict]]:
+    if _postgres_enabled():
+        return _build_documents_from_rows_postgres(rows, default_source=default_source)
     docs = load_documents()
     existing_by_hash, existing_by_document_id = _document_indexes(docs)
     next_id = next_record_id(seed_files)
     records: list[dict] = []
     existing_hits: list[dict] = []
     errors: list[dict] = []
+    seen_by_hash: dict[str, dict] = {}
+    seen_by_document_id: dict[str, dict] = {}
 
     for idx, row in enumerate(rows, start=1):
         text = normalize_text(str(row.get("text", "")))
@@ -519,8 +606,61 @@ def build_documents_from_rows(
     return records, existing_hits, errors
 
 
+def _build_documents_from_rows_postgres(
+    rows: Iterable[dict],
+    *,
+    default_source: str,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    records: list[dict] = []
+    existing_hits: list[dict] = []
+    errors: list[dict] = []
+    seen_by_hash: dict[str, dict] = {}
+    seen_by_document_id: dict[str, dict] = {}
+
+    for idx, row in enumerate(rows, start=1):
+        text = normalize_text(str(row.get("text", "")))
+        if not text:
+            errors.append({"row_number": idx, "error": "缺少 text", "row": row})
+            continue
+        hash_value = text_hash(text)
+        document_id = str(row.get("document_id") or make_document_id(hash_value)).strip()
+        if document_id in seen_by_document_id:
+            existing_hits.append(_existing_hit(seen_by_document_id[document_id], reason="document_id", row_number=idx))
+            continue
+        if hash_value in seen_by_hash:
+            existing_hits.append(_existing_hit(seen_by_hash[hash_value], reason="text_hash", row_number=idx))
+            continue
+        now = utc_now()
+        record = {
+            "document_id": document_id,
+            "text_hash": hash_value,
+            "text": text,
+            "category": str(row.get("category", "")),
+            "tags": parse_tags(row.get("tags")),
+            "source": str(row.get("source") or default_source),
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            reason, doc = _pg().insert_document(record)
+        except ValueError as exc:
+            errors.append({"row_number": idx, "error": str(exc), "row": row})
+            continue
+        if reason == "inserted":
+            records.append(doc)
+            seen_by_hash[hash_value] = doc
+            seen_by_document_id[document_id] = doc
+        else:
+            existing_hits.append(_existing_hit(doc, reason=reason, row_number=idx))
+
+    return records, existing_hits, errors
+
+
 def add_documents(records: list[dict]) -> None:
     if not records:
+        return
+    if _postgres_enabled():
+        _pg().mark_documents_indexed(records)
         return
     docs = load_documents()
     docs.extend(records)
@@ -528,12 +668,16 @@ def add_documents(records: list[dict]) -> None:
 
 
 def list_documents(offset: int = 0, limit: int = 50) -> tuple[list[dict], int]:
+    if _postgres_enabled():
+        return _pg().list_documents(offset=offset, limit=limit)
     docs = load_documents()
     total = len(docs)
     return docs[offset: offset + limit], total
 
 
 def get_document(record_id: int) -> dict | None:
+    if _postgres_enabled():
+        return _pg().get_document(record_id)
     for doc in load_documents():
         if int(doc.get("id", 0)) == record_id:
             return doc
@@ -541,6 +685,23 @@ def get_document(record_id: int) -> dict | None:
 
 
 def update_document(record_id: int, changes: dict) -> dict:
+    if _postgres_enabled():
+        current = get_document(record_id)
+        if current is None:
+            raise KeyError(f"文档不存在: {record_id}")
+        new_text = normalize_text(str(changes.get("text", current.get("text", ""))))
+        if not new_text:
+            raise ValueError("text 不能为空")
+        new_hash = text_hash(new_text)
+        payload = {
+            "document_id": str(changes.get("document_id") or current.get("document_id") or make_document_id(new_hash)),
+            "text_hash": new_hash,
+            "text": new_text,
+            "category": str(changes.get("category", current.get("category", ""))),
+            "tags": parse_tags(changes.get("tags", current.get("tags", []))),
+            "source": str(changes.get("source", current.get("source", "api"))),
+        }
+        return _pg().update_document(record_id, payload)
     docs = load_documents()
     target: dict | None = None
     for doc in docs:
@@ -570,6 +731,8 @@ def update_document(record_id: int, changes: dict) -> dict:
 
 
 def delete_document(record_id: int) -> bool:
+    if _postgres_enabled():
+        return _pg().delete_document(record_id)
     docs = load_documents()
     remaining = [doc for doc in docs if int(doc.get("id", 0)) != record_id]
     if len(remaining) == len(docs):
@@ -579,6 +742,9 @@ def delete_document(record_id: int) -> bool:
 
 
 def clear_documents() -> None:
+    if _postgres_enabled():
+        _pg().clear_documents()
+        return
     save_documents([])
 
 
@@ -596,6 +762,9 @@ def parse_upload_rows(content: bytes, filename: str) -> list[dict]:
 
 
 def append_search_log(entry: dict) -> None:
+    if _postgres_enabled():
+        _pg().save_search_log(entry)
+        return
     SEARCH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {"ts": utc_now(), **entry}
     with SEARCH_LOG_FILE.open("a", encoding="utf-8") as f:
@@ -655,11 +824,16 @@ def create_import_job(
                     "row_json": json.dumps(row, ensure_ascii=False),
                 })
         summary["failed_rows_download_url"] = f"/api/import-jobs/{job_id}/failed-rows"
+    if _postgres_enabled():
+        _pg().save_import_job(summary, errors)
+        return summary
     _write_json(IMPORT_REPORT_DIR / f"{job_id}.json", [summary])
     return summary
 
 
 def load_import_job(job_id: str) -> dict | None:
+    if _postgres_enabled():
+        return _pg().load_import_job(job_id)
     data = _read_json_list(IMPORT_REPORT_DIR / f"{job_id}.json")
     return data[0] if data else None
 

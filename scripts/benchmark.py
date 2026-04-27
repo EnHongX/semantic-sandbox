@@ -15,7 +15,7 @@
     python scripts/benchmark.py milvus       # 只测 Milvus
 
 前置条件：
-    - 目标数据库已通过 docker compose up -d 启动
+    - 目标向量后端已通过根目录 docker compose profile 启动
     - pip install sentence-transformers qdrant-client weaviate-client pymilvus
     - pip install psutil（可选，用于内存统计）
 """
@@ -44,7 +44,7 @@ DATA_FILE = ROOT / "data" / "sample_large_en.json"
 MODEL_CACHE = ROOT / "models"
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-BENCH_COLLECTION = "benchmark_test"   # 专用于基准测试，不影响 demo 数据
+BENCH_COLLECTION = "benchmark_test"   # 专用于基准测试，不影响服务数据
 N_INSERT = 1000
 N_QUERY  = 100
 BATCH    = 100

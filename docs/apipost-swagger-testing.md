@@ -8,11 +8,11 @@
 
 ## 2. 为什么
 
-- 三套 demo 的 REST API 路径基本一致，只需要切换端口。
+- 三套服务 的 REST API 路径基本一致，只需要切换端口。
 - ApiPost 比手写 curl 更适合保存请求、复用环境变量、记录响应。
 - Swagger 的 `/openapi.json` 可以直接导入 ApiPost，减少手动录接口的错误。
 
-> ⚠️ 风险提醒：`DELETE /api/records` 会清空向量库集合，并清空 `data/documents.json` 和 `data/user_data.json`。除非明确要重置数据，否则不要放进常规测试流。
+> ⚠️ 风险提醒：`DELETE /api/records` 会清空向量库集合，并清空 PostgreSQL `documents` 表。除非明确要重置数据，否则不要放进常规测试流。
 
 ## 3. 怎么做
 
@@ -21,7 +21,7 @@
 以 Qdrant 为例，先启动数据库容器和 Web API：
 
 ```bash
-cd /Users/block/Project/semantic-sandbox/qdrant-demo
+cd /Users/block/Project/semantic-sandbox/qdrant-service
 make start
 make web
 ```
@@ -45,6 +45,8 @@ make web
 5. 导入完成后，接口会按 Swagger 分组显示。
 
 > 注意：`/docs` 是 Swagger 页面，给人看的；`/openapi.json` 是 OpenAPI 定义，给工具导入用。
+>
+> 如果 `.env` 开启了 `WEB_AUTH_ENABLED=1`，`/docs` 和 `/openapi.json` 会先要求 Web 登录。ApiPost 直接 URL 导入受限时，开发环境可临时设 `WEB_AUTH_ENABLED=0` 重新启动服务后导入；生产环境不要为了导入接口长期关闭 Web 登录态。
 
 ### 3.3 建议配置环境变量
 
@@ -55,11 +57,18 @@ make web
 | `qdrant_base_url` | `http://localhost:8888` |
 | `weaviate_base_url` | `http://localhost:8889` |
 | `milvus_base_url` | `http://localhost:8890` |
+| `api_key` | `.env` 中的 `API_KEY` |
 
 后续请求地址统一写成：
 
 ```text
 {{qdrant_base_url}}/api/search
+```
+
+所有 `/api/*` 请求都加统一 Header：
+
+```text
+X-API-Key: {{api_key}}
 ```
 
 切换后端时只换变量即可。
@@ -85,7 +94,7 @@ make web
 |---|---|
 | Method | `GET` |
 | URL | `{{qdrant_base_url}}/api/health/panel` |
-| Headers | 无特殊要求 |
+| Headers | `X-API-Key: {{api_key}}` |
 | Body | 无 |
 
 预期响应重点：
@@ -105,7 +114,7 @@ make web
 如果 `db.ok` 是 `false`，先检查数据库容器是否启动：
 
 ```bash
-cd /Users/block/Project/semantic-sandbox/qdrant-demo
+cd /Users/block/Project/semantic-sandbox/qdrant-service
 make ps
 ```
 
@@ -117,7 +126,7 @@ make ps
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/ingest` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -129,7 +138,7 @@ Body：
     "向量数据库用于语义检索"
   ],
   "category": "geography",
-  "tags": ["travel", "demo"],
+  "tags": ["travel", "sample"],
   "source": "apipost"
 }
 ```
@@ -165,7 +174,7 @@ Body：
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/search` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -194,7 +203,7 @@ Body：
       "text": "巴黎是法国的首都",
       "score": 0.8,
       "category": "geography",
-      "tags": ["travel", "demo"],
+      "tags": ["travel", "sample"],
       "source": "apipost"
     }
   ]
@@ -219,7 +228,7 @@ Body：
 |---|---|
 | Method | `GET` |
 | URL | `{{qdrant_base_url}}/api/documents?offset=0&limit=10` |
-| Headers | 无特殊要求 |
+| Headers | `X-API-Key: {{api_key}}` |
 | Body | 无 |
 
 预期响应：
@@ -252,7 +261,7 @@ Body：
 |---|---|
 | Method | `PUT` |
 | URL | `{{qdrant_base_url}}/api/documents/11` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -293,6 +302,7 @@ Body：
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/upload` |
+| Headers | `X-API-Key: {{api_key}}` |
 | Body 类型 | `form-data` |
 
 ApiPost Body 配置：
@@ -371,7 +381,7 @@ text,document_id,category,tags,source
 |---|---|
 | Method | `POST` |
 | URL | `{{qdrant_base_url}}/api/documents/batch-reindex` |
-| Header | `Content-Type: application/json` |
+| Headers | `Content-Type: application/json`、`X-API-Key: {{api_key}}` |
 | Body 类型 | `JSON` |
 
 Body：
@@ -401,7 +411,7 @@ Body：
 | `DELETE` | `{{qdrant_base_url}}/api/record/{record_id}` | 删除单条向量和文档元数据 |
 | `DELETE` | `{{qdrant_base_url}}/api/documents/{record_id}` | 删除单条文档和向量 |
 | `POST` | `{{qdrant_base_url}}/api/documents/batch-delete` | 批量删除文档和向量 |
-| `DELETE` | `{{qdrant_base_url}}/api/records` | 清空集合，并清空本地元数据文件 |
+| `DELETE` | `{{qdrant_base_url}}/api/records` | 清空集合，并清空 PostgreSQL 文档元数据 |
 
 ## 7. 三套后端怎么切换
 

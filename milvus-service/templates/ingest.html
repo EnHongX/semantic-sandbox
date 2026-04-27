@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% set active = "ingest" %}
+{% block title %}写入数据 · Milvus Service{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <div class="eyebrow-row">
+    <span class="eyebrow">Ingest Pipeline</span>
+    <a href="/docs#/数据写入/api_ingest_api_ingest_post" class="docs-link">POST /api/ingest</a>
+  </div>
+  <div class="hero-grid">
+    <div>
+      <h1 class="page-title">统一写入与导入面板</h1>
+      <p class="page-summary">
+        文本写入、批量上传、导入状态、失败行下载都集中在这一页。页面结构按产品运维视角组织，不再是 试验式散点操作。
+      </p>
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span class="metric-label">幂等写入</span>
+          <strong class="metric-value">existing returned</strong>
+          <span class="metric-note">命中 document_id 或 text_hash 时返回已存在明细，而不是静默跳过。</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">导入状态</span>
+          <strong class="metric-value">job tracked</strong>
+          <span class="metric-note">上传后可看到 inserted、existing、failed 统计和失败行下载。</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">向量动作</span>
+          <strong class="metric-value">embed + upsert</strong>
+          <span class="metric-note">文本写入完成后自动重建向量并写入当前向量库。</span>
+        </div>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="side-note">
+        <strong>最小上线口径</strong>
+        <p>这页只承接真正上线必需的导入链路，不把预览、批量清洗、复杂映射提前塞进首屏。</p>
+      </div>
+      <div class="side-note">
+        <strong>导入策略</strong>
+        <ul class="helper-list">
+          <li>手工逐行写入，适合快速验证。</li>
+          <li>文件上传，适合批量导入和失败追踪。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+{% if message %}
+<div class="alert alert-success">✓ {{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error">✗ {{ error }}</div>
+{% endif %}
+{% if import_status %}
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">导入任务状态</h2>
+      <div class="section-note">
+        job_id=<code>{{ import_status.job_id }}</code>，状态 <code>{{ import_status.status }}</code>，文件 <code>{{ import_status.source_filename or 'unknown' }}</code>
+      </div>
+    </div>
+    {% if import_status.failed_rows_download_url %}
+    <a href="{{ import_status.failed_rows_download_url }}" class="btn btn-outline btn-sm">下载失败行 CSV</a>
+    {% endif %}
+  </div>
+  <div class="stat-strip">
+    <div class="stat-chip">
+      <span class="metric-label">Inserted</span>
+      <strong>{{ import_status.inserted }}</strong>
+    </div>
+    <div class="stat-chip">
+      <span class="metric-label">Existing</span>
+      <strong>{{ import_status.existing_count }}</strong>
+    </div>
+    <div class="stat-chip">
+      <span class="metric-label">Failed</span>
+      <strong>{{ import_status.failed }}</strong>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<div class="split-grid">
+  <section class="surface">
+    <div class="surface-header">
+      <div>
+        <h2 class="surface-title">逐行写入</h2>
+        <div class="section-note">适合快速验证 embedding、去重和检索链路。</div>
+      </div>
+    </div>
+    <form method="post" action="/ingest" class="stack">
+      <div>
+        <label for="texts">每行一条文本，写入后自动向量化并入库</label>
+        <textarea name="texts" id="texts" rows="8"
+                  placeholder="第一行文本&#10;第二行文本&#10;第三行文本&#10;（空行自动跳过）">{{ texts or '' }}</textarea>
+        <p class="hint">每行算一条独立记录，系统自动分配 ID，并写入 PostgreSQL 元数据主库。</p>
+      </div>
+      <div class="action-row">
+        <button type="submit" class="btn">写入向量库</button>
+        <div class="result-meta">
+          <span class="mono-label">sample</span>
+          <button type="button" class="btn btn-outline btn-sm" onclick="loadSample('en', this)">英文示例数据</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="loadSample('zh', this)">中文示例数据</button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <section class="surface">
+    <div class="surface-header">
+      <div>
+        <h2 class="surface-title">批量上传文件</h2>
+        <div class="section-note">支持 JSON / CSV，上传后返回成功、已存在、失败统计。</div>
+      </div>
+    </div>
+    <form method="post" action="/ingest/upload" enctype="multipart/form-data" class="stack">
+      <div>
+        <label for="file">选择导入文件</label>
+        <div class="file-upload-actions">
+          <button type="button" class="btn btn-outline btn-sm file-upload-trigger" onclick="selectFileWithSystemPicker()">选择 JSON / CSV 文件</button>
+          <input type="file" name="file" id="file" accept=".json,.csv" required class="native-file-input">
+        </div>
+        <div id="file-drop-zone" class="file-drop-zone" tabindex="0">拖拽 JSON / CSV 文件到这里也可以导入。</div>
+        <div id="file-selected-state" class="file-selected-state">未选择文件</div>
+        <p class="hint">如果系统文件框被浏览器或扩展拦截，可以直接拖拽文件到上方区域。</p>
+      </div>
+      <p class="hint">
+        支持 <strong>JSON</strong>（<code>[{"text":"..."}]</code>）或 <strong>CSV</strong>（首行含 <code>text</code> 列）。
+        <code>text</code> 必填，可选字段包括 <code>document_id</code>、<code>category</code>、<code>tags</code>、<code>source</code>。
+      </p>
+      <button type="submit" class="btn btn-sm">上传并写入</button>
+    </form>
+  </section>
+</div>
+
+<div class="helper-grid">
+  <section class="info-card">
+    <strong>数据存储说明</strong>
+    <ol>
+      <li>文本会先进入 embedding 模型，再写入当前向量库用于语义检索。</li>
+      <li>原始文本会写入 PostgreSQL 元数据主库，作为可恢复的业务数据。</li>
+    </ol>
+  </section>
+  <section class="info-card">
+    <strong>命令行导入</strong>
+    <p class="section-note">
+      准备好 <code>[{"id": 1, "text": "...", "category": "..."}]</code> 格式的 JSON 后，可执行
+      <code>python -m src.ingest /path/to/your_data.json</code> 或 <code>make ingest-large</code>。
+    </p>
+  </section>
+</div>
+
+<section class="surface danger-zone">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">危险操作</h2>
+      <div class="section-note">清空当前向量库全部数据，不可恢复。</div>
+    </div>
+    <button type="button" class="btn btn-danger btn-sm" onclick="clearAll(this)">清空全部数据</button>
+  </div>
+</section>
+
+<script>
+function updateSelectedFileState(file) {
+  const state = document.getElementById('file-selected-state');
+  if (!state) return;
+  if (!file) {
+    state.textContent = '未选择文件';
+    state.classList.remove('is-selected');
+    return;
+  }
+  state.textContent = `已选择：${file.name} (${Math.ceil(file.size / 1024)} KB)`;
+  state.classList.add('is-selected');
+}
+
+function isSupportedImportFile(file) {
+  if (!file) return false;
+  return /\.(json|csv)$/i.test(file.name);
+}
+
+function setSelectedImportFile(file, source) {
+  const input = document.getElementById('file');
+  if (!input) {
+    console.warn('[file-picker] missing input', {source});
+    return false;
+  }
+  if (!isSupportedImportFile(file)) {
+    console.warn('[file-picker] unsupported file', {
+      source,
+      name: file ? file.name : null,
+      type: file ? file.type : null
+    });
+    alert('请选择 .json 或 .csv 文件');
+    return false;
+  }
+  try {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+    input.files = dataTransfer.files;
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+    updateSelectedFileState(file);
+    console.info('[file-picker] file selected', {source, name: file.name, size: file.size});
+    return true;
+  } catch (error) {
+    console.warn('[file-picker] set file failed', {
+      source,
+      name: error.name,
+      message: error.message
+    });
+    return false;
+  }
+}
+
+async function selectFileWithSystemPicker() {
+  const input = document.getElementById('file');
+  if (typeof window.showOpenFilePicker === 'function') {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        excludeAcceptAllOption: false,
+        types: [{
+          description: 'JSON / CSV',
+          accept: {
+            'application/json': ['.json'],
+            'text/csv': ['.csv'],
+            'text/plain': ['.json', '.csv']
+          }
+        }]
+      });
+      const file = await handle.getFile();
+      setSelectedImportFile(file, 'showOpenFilePicker');
+      return;
+    } catch (error) {
+      console.warn('[file-picker] system picker failed', {
+        name: error.name,
+        message: error.message
+      });
+      if (error.name === 'AbortError') return;
+    }
+  }
+
+  try {
+    if (input && typeof input.showPicker === 'function') {
+      input.showPicker();
+      return;
+    }
+    if (input) input.click();
+  } catch (error) {
+    console.warn('[file-picker] native picker failed', {
+      name: error.name,
+      message: error.message
+    });
+  }
+}
+
+function setupFilePickerDebug() {
+  const input = document.getElementById('file');
+  const dropZone = document.getElementById('file-drop-zone');
+  if (input) {
+    input.addEventListener('change', () => {
+      updateSelectedFileState(input.files && input.files[0] ? input.files[0] : null);
+    });
+  }
+
+  if (dropZone) {
+    ['dragenter', 'dragover'].forEach((eventName) => {
+      dropZone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropZone.classList.add('is-dragging');
+      });
+    });
+    ['dragleave', 'drop'].forEach((eventName) => {
+      dropZone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropZone.classList.remove('is-dragging');
+      });
+    });
+    dropZone.addEventListener('drop', (event) => {
+      const file = event.dataTransfer && event.dataTransfer.files
+        ? event.dataTransfer.files[0]
+        : null;
+      setSelectedImportFile(file, 'drop');
+    });
+  }
+}
+
+setupFilePickerDebug();
+
+async function loadSample(lang, btn) {
+  const original = btn.textContent;
+  btn.textContent = '加载中…';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/samples/' + lang);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    document.getElementById('texts').value = data.texts.join('\n');
+  } catch (e) {
+    alert('加载失败：' + e.message);
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+
+async function clearAll(btn) {
+  if (!confirm('确认清空向量库中的所有数据？\n此操作不可恢复。')) return;
+  const original = btn.textContent;
+  btn.textContent = '清空中…';
+  btn.disabled = true;
+  try {
+    const apiKey = prompt('请输入 API Key 后继续清空');
+    if (!apiKey) throw new Error('缺少 API Key');
+    const resp = await fetch('/api/records', {method: 'DELETE', headers: {'X-API-Key': apiKey}});
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    alert('已清空向量库');
+    location.reload();
+  } catch (e) {
+    alert('清空失败：' + e.message);
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+</script>
+
+{% endblock %}

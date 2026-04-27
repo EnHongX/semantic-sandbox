@@ -2,9 +2,9 @@
 
 适用对象：前端对接、测试验收。
 
-本文档以 `qdrant-demo` 为基准，覆盖当前 REST API 的请求代码、参数、正确请求、正确响应和常见错误。`weaviate-demo`、`milvus-demo` 的接口路径与请求/响应结构保持一致，差异见“多后端差异”。
+本文档以 `qdrant-service` 为基准，覆盖当前 REST API 的请求代码、参数、正确请求、正确响应和常见错误。`weaviate-service`、`milvus-service` 的接口路径与请求/响应结构保持一致，差异见“多后端差异”。
 
-说明：本文档覆盖 API 对接路径；`/`、`/ingest`、`/documents`、`/health/panel` 等 HTML 页面和表单提交路由属于 Web UI 内部路由，不作为前端 API 对接接口。
+说明：本文档覆盖 API 对接路径；`/`、`/ingest`、`/documents`、`/health/panel` 等 HTML 页面和表单提交路由属于 Web UI 内部路由，不作为前端 API 对接接口。开启 `WEB_AUTH_ENABLED=1` 后，浏览器页面、Swagger UI 和 `/openapi.json` 需要先通过 `/login` 登录。
 
 ## 1. 基础信息
 
@@ -12,16 +12,16 @@
 
 | 后端 | 启动目录 | API Base URL | Swagger UI | OpenAPI |
 |---|---|---|---|---|
-| Qdrant | `qdrant-demo/` | `http://localhost:8888` | `http://localhost:8888/docs` | `http://localhost:8888/openapi.json` |
-| Weaviate | `weaviate-demo/` | `http://localhost:8889` | `http://localhost:8889/docs` | `http://localhost:8889/openapi.json` |
-| Milvus | `milvus-demo/` | `http://localhost:8890` | `http://localhost:8890/docs` | `http://localhost:8890/openapi.json` |
+| Qdrant | `qdrant-service/` | `http://localhost:8888` | `http://localhost:8888/docs` | `http://localhost:8888/openapi.json` |
+| Weaviate | `weaviate-service/` | `http://localhost:8889` | `http://localhost:8889/docs` | `http://localhost:8889/openapi.json` |
+| Milvus | `milvus-service/` | `http://localhost:8890` | `http://localhost:8890/docs` | `http://localhost:8890/openapi.json` |
 
-当前仓库未包含 `chroma-demo`、`faiss-demo` 目录。本文档只记录实际存在的三个 demo。
+当前仓库未包含 Chroma、Faiss 目录。本文档只记录实际存在的三个服务。
 
 ### 1.2 启动 Qdrant API
 
 ```bash
-cd /Users/block/Project/semantic-sandbox/qdrant-demo
+cd /Users/block/Project/semantic-sandbox/qdrant-service
 make start
 make web
 ```
@@ -30,16 +30,16 @@ make web
 
 | 项 | 说明 |
 |---|---|
-| 鉴权 | 当前接口未启用鉴权。 |
+| 鉴权 | REST API 默认使用 `X-API-Key`。Web UI 使用签名 Cookie 登录态。`/health`、`GET /api/count`、`GET /api/model/status`、`GET /api/samples/{lang}` 保持公开，便于探活和 Web UI 基础读取。 |
 | 请求格式 | JSON 接口使用 `Content-Type: application/json`。文件上传接口使用 `multipart/form-data`。 |
 | 响应格式 | 默认 JSON；失败行下载接口返回 `text/csv`。 |
-| ID 规则 | 文档 ID 由服务端自动分配，从现有最大 `id + 1` 开始。 |
+| ID 规则 | 文档 ID 由 PostgreSQL 自增主键分配。 |
 | 重复写入 | 重复文本会被跳过，返回 `skipped` 和 `existing`，属于正常幂等行为。 |
 | 分页限制 | `GET /api/documents` 的 `limit` 服务端限制在 `1..200`。 |
 | 搜索限制 | 搜索最终返回数量限制在 `1..20`。 |
 | 前端跨域 | 当前 FastAPI 应用未配置 CORS。若前端运行在其他端口，浏览器可能因跨域拦截请求；同源调用或后端补充 CORS 后再对接。 |
 
-⚠️ 风险：`DELETE /api/records` 会清空当前向量库集合，并清空 `data/documents.json` 和 `data/user_data.json`。测试环境可以用，验收脚本不要默认执行。
+⚠️ 风险：`DELETE /api/records` 会清空当前向量库集合，并清空 PostgreSQL `documents` 表。测试环境可以用，验收脚本不要默认执行。
 
 ### 1.4 通用客户端变量
 
@@ -68,6 +68,32 @@ Node.js 18+：
 ```js
 const BASE_URL = "http://localhost:8888";
 ```
+
+若 `.env` 中 `AUTH_ENABLED=1`，写入、搜索、文档管理、导入任务、健康面板等 `/api/*` 请求需要带 API Key：
+
+```bash
+API_KEY=change_me_to_a_long_random_secret
+curl -H "X-API-Key: $API_KEY" "$BASE_URL/api/documents"
+```
+
+```python
+HEADERS = {"X-API-Key": "change_me_to_a_long_random_secret"}
+```
+
+```js
+const HEADERS = {"X-API-Key": "change_me_to_a_long_random_secret"};
+```
+
+Web UI 登录态使用单独配置，不替代 REST API Key：
+
+```env
+WEB_AUTH_ENABLED=1
+WEB_USERNAME=admin
+WEB_PASSWORD=change_me_to_a_strong_password
+WEB_SESSION_SECRET=change_me_to_a_long_random_session_secret
+```
+
+浏览器访问 `/docs` 或 `/openapi.json` 如果被重定向到 `/login`，先登录即可；ApiPost、curl、后端服务调用仍应直接访问 `/api/*` 并携带 `X-API-Key`。
 
 后文每个接口的“正确请求”代码块顺序固定为：`curl`、`Python requests`、浏览器 `fetch`、`Node.js 18+ fetch`。
 
@@ -141,7 +167,7 @@ FastAPI 参数校验错误：
 | `DELETE` | `/api/record/{record_id}` | 旧路径，删除指定 ID 的记录。 |
 | `POST` | `/api/documents/batch-delete` | 批量删除文档和向量。 |
 | `POST` | `/api/documents/batch-reindex` | 批量重建所选文档向量。 |
-| `POST` | `/api/reindex` | 按 `documents.json` 重建整个向量集合。 |
+| `POST` | `/api/reindex` | 按 PostgreSQL `documents` 表重建整个向量集合。 |
 | `DELETE` | `/api/records` | 清空全部记录。 |
 | `GET` | `/api/import-jobs/{job_id}` | 查看上传导入任务状态。 |
 | `GET` | `/api/import-jobs/{job_id}/failed-rows` | 下载上传失败行 CSV。 |
@@ -181,7 +207,8 @@ console.log(res.status, await res.json());
 ```json
 {
   "status": "ok",
-  "db": "qdrant"
+  "db": "qdrant",
+  "metadata_store": "postgres"
 }
 ```
 
@@ -189,7 +216,7 @@ console.log(res.status, await res.json());
 
 ```json
 {
-  "detail": "向量数据库未连接，请先在 qdrant-demo/ 目录执行 docker compose up -d 启动服务"
+  "detail": "向量数据库未连接，请先在项目根目录执行 docker compose --profile qdrant up -d postgres qdrant"
 }
 ```
 
@@ -324,7 +351,7 @@ console.log(await res.json());
 
 ### 4.5 POST `/api/ingest`
 
-用途：把文本列表向量化后写入向量库，同时写入 `data/documents.json` 并镜像到 `data/user_data.json`。
+用途：把文本列表向量化后写入向量库，同时写入 PostgreSQL `documents` 表并记录向量同步状态。
 
 参数：
 
@@ -343,7 +370,7 @@ curl -X POST "$BASE_URL/api/ingest" \
   -d '{
     "texts": ["巴黎是法国的首都", "向量数据库用于语义检索"],
     "category": "geography",
-    "tags": ["travel", "demo"],
+    "tags": ["travel", "sample"],
     "source": "frontend"
   }'
 ```
@@ -352,7 +379,7 @@ curl -X POST "$BASE_URL/api/ingest" \
 payload = {
     "texts": ["巴黎是法国的首都", "向量数据库用于语义检索"],
     "category": "geography",
-    "tags": ["travel", "demo"],
+    "tags": ["travel", "sample"],
     "source": "frontend",
 }
 res = requests.post(f"{BASE_URL}/api/ingest", json=payload, timeout=60)
@@ -364,7 +391,7 @@ print(res.json())
 const payload = {
   texts: ["巴黎是法国的首都", "向量数据库用于语义检索"],
   category: "geography",
-  tags: ["travel", "demo"],
+  tags: ["travel", "sample"],
   source: "frontend"
 };
 const res = await fetch(`${BASE_URL}/api/ingest`, {
@@ -379,7 +406,7 @@ console.log(await res.json());
 const payload = {
   texts: ["巴黎是法国的首都", "向量数据库用于语义检索"],
   category: "geography",
-  tags: ["travel", "demo"],
+  tags: ["travel", "sample"],
   source: "node"
 };
 const res = await fetch(`${BASE_URL}/api/ingest`, {
@@ -467,7 +494,7 @@ curl -X POST "$BASE_URL/api/ingest" \
   {
     "text": "巴黎是法国的首都",
     "category": "geography",
-    "tags": ["travel", "demo"],
+    "tags": ["travel", "sample"],
     "source": "upload"
   }
 ]
@@ -475,7 +502,7 @@ curl -X POST "$BASE_URL/api/ingest" \
 
 ```csv
 text,category,tags,source
-巴黎是法国的首都,geography,"travel,demo",upload
+巴黎是法国的首都,geography,"travel,sample",upload
 ```
 
 正确请求：
@@ -654,7 +681,7 @@ console.log(await res.json());
       "matched_terms": ["法国"],
       "score_explanation": "高度相关，score=0.8732，越接近 1 越相似。",
       "category": "geography",
-      "tags": ["travel", "demo"],
+      "tags": ["travel", "sample"],
       "source": "frontend",
       "created_at": "2026-04-27T06:00:00+00:00",
       "updated_at": "2026-04-27T06:00:00+00:00"
@@ -724,7 +751,7 @@ console.log(await res.json());
 
 ### 4.9 GET `/api/documents`
 
-用途：分页查看本地文档元数据。
+用途：分页查看 PostgreSQL 文档元数据。
 
 参数：
 
@@ -769,7 +796,7 @@ console.log(await res.json());
       "document_id": "doc_xxx",
       "text": "巴黎是法国的首都",
       "category": "geography",
-      "tags": ["travel", "demo"],
+      "tags": ["travel", "sample"],
       "source": "frontend"
     }
   ]
@@ -839,7 +866,7 @@ console.log(await res.json());
   "text_hash": "xxx",
   "text": "巴黎是法国的首都",
   "category": "geography",
-  "tags": ["travel", "demo"],
+  "tags": ["travel", "sample"],
   "source": "frontend",
   "created_at": "2026-04-27T06:00:00+00:00",
   "updated_at": "2026-04-27T06:00:00+00:00"
@@ -1203,7 +1230,7 @@ curl -X POST "$BASE_URL/api/documents/batch-reindex" \
 
 ### 4.16 POST `/api/reindex`
 
-用途：按本地 `data/documents.json` 重建当前向量库集合。适合换模型、集合损坏、向量库数据与本地元数据不一致时使用。
+用途：按 PostgreSQL `documents` 表重建当前向量库集合。适合换模型、集合损坏、向量库数据与 PostgreSQL 元数据不一致时使用。
 
 参数：无。
 
@@ -1241,7 +1268,7 @@ console.log(await res.json());
 
 ### 4.17 DELETE `/api/records`
 
-用途：清空当前向量库集合，并清空本地文档元数据。
+用途：清空当前向量库集合，并清空 PostgreSQL 文档元数据。
 
 参数：无。
 
@@ -1469,9 +1496,9 @@ curl "$BASE_URL/api/samples/jp"
 
 | 后端 | API Base URL | `backend` 字段 | 分数说明 | 常见连接错误提示 |
 |---|---|---|---|---|
-| Qdrant | `http://localhost:8888` | `qdrant` | Qdrant cosine score，越接近 `1` 越相似。 | `向量数据库未连接，请先在 qdrant-demo/ 目录执行 docker compose up -d 启动服务` |
-| Weaviate | `http://localhost:8889` | `weaviate` | `1 - cosine distance`，越接近 `1` 越相似。 | `向量数据库未连接，请先在 weaviate-demo/ 目录执行 docker compose up -d 启动服务` |
-| Milvus | `http://localhost:8890` | `milvus` | COSINE 相似度，越接近 `1` 越相似。 | `向量数据库未连接，请先在 milvus-demo/ 目录执行 docker compose up -d 启动服务（Milvus 首次启动约需 30 秒）` |
+| Qdrant | `http://localhost:8888` | `qdrant` | Qdrant cosine score，越接近 `1` 越相似。 | `向量数据库未连接，请先在项目根目录执行 docker compose --profile qdrant up -d postgres qdrant` |
+| Weaviate | `http://localhost:8889` | `weaviate` | `1 - cosine distance`，越接近 `1` 越相似。 | `向量数据库未连接，请先在项目根目录执行 docker compose --profile weaviate up -d postgres weaviate` |
+| Milvus | `http://localhost:8890` | `milvus` | COSINE 相似度，越接近 `1` 越相似。 | `向量数据库未连接，请先在项目根目录执行 docker compose --profile milvus up -d postgres milvus-etcd milvus-minio milvus attu（Milvus 首次启动约需 30 秒）` |
 
 切换后端时，客户端只需要替换 `BASE_URL`。
 

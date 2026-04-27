@@ -25,10 +25,15 @@ class PostgresStoreIntegrationTests(unittest.TestCase):
     def test_document_lifecycle_and_import_job(self) -> None:
         from semantic_sandbox_common import (
             add_documents,
+            append_audit_log,
             append_error_log,
             append_search_log,
             build_documents_from_texts,
             create_import_job,
+            list_audit_logs,
+            list_error_logs,
+            list_import_jobs,
+            list_search_logs,
             list_documents,
             load_import_job,
         )
@@ -59,9 +64,14 @@ class PostgresStoreIntegrationTests(unittest.TestCase):
 
         append_search_log({"backend": "qdrant", "query": "postgres", "result_count": 1})
         append_error_log({"backend": "qdrant", "operation": "test", "surface": "unit", "error": "sample"})
+        append_audit_log({"backend": "qdrant", "event": "unit_event", "actor": "unit", "metadata": {"ok": True}})
         job = create_import_job(source_filename="sample.csv", inserted=1, existing=[], errors=[])
 
         self.assertEqual(load_import_job(job["job_id"])["inserted"], 1)
+        self.assertEqual(list_search_logs(backend="qdrant")[0]["query"], "postgres")
+        self.assertEqual(list_error_logs(backend="qdrant")[0]["error"], "sample")
+        self.assertEqual(list_audit_logs(backend="qdrant")[0]["event"], "unit_event")
+        self.assertEqual(list_import_jobs()[0]["inserted"], 1)
 
     def test_pending_document_can_retry_vector_write(self) -> None:
         from semantic_sandbox_common import build_documents_from_texts

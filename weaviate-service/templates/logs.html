@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% set active = "logs" %}
+{% block title %}日志 · {{ backend | capitalize }} Service{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <div class="eyebrow-row">
+    <span class="eyebrow">Logs</span>
+    <span class="docs-link">{{ backend }}</span>
+  </div>
+  <div class="hero-grid">
+    <div>
+      <h1 class="page-title">审计与运行日志</h1>
+      <p class="page-summary">列表化展示关键日志：登录鉴权、文档操作、搜索、错误和导入任务。</p>
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span class="metric-label">当前视图</span>
+          <strong class="metric-value">{{ logs.kind }}</strong>
+          <span class="metric-note">共 {{ logs.total }} 条</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">分页</span>
+          <strong class="metric-value">{{ logs.page }}/{{ logs.total_pages }}</strong>
+          <span class="metric-note">每页 {{ logs.page_size }} 条</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">保留原则</span>
+          <strong class="metric-value">Audit</strong>
+          <span class="metric-note">不保存密码、API Key、全文请求体</span>
+        </div>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="side-note">
+        <strong>日志入口</strong>
+        <p>普通访问日志不写入 PostgreSQL；建议交给 Docker、Nginx 或日志系统收集。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      <h2 class="surface-title">日志类型</h2>
+      <div class="section-note">审计 / 搜索 / 错误日志按当前向量后端过滤；导入任务展示全局任务。</div>
+    </div>
+    <div class="pagination-summary">
+      第 {{ logs.page }} 页，共 {{ logs.total_pages }} 页
+    </div>
+  </div>
+  <div class="action-row" style="margin-top:18px">
+    <a href="/logs?kind=audit&page=1&page_size={{ logs.page_size }}" class="btn {% if logs.kind == 'audit' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">审计</a>
+    <a href="/logs?kind=search&page=1&page_size={{ logs.page_size }}" class="btn {% if logs.kind == 'search' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">搜索</a>
+    <a href="/logs?kind=errors&page=1&page_size={{ logs.page_size }}" class="btn {% if logs.kind == 'errors' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">错误</a>
+    <a href="/logs?kind=imports&page=1&page_size={{ logs.page_size }}" class="btn {% if logs.kind == 'imports' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">导入任务</a>
+  </div>
+  <div class="action-row" style="margin-top:12px">
+    <span class="section-note">每页条数</span>
+    <div class="pager-controls">
+      {% for size in [10, 25, 50, 100] %}
+      <a href="/logs?kind={{ logs.kind }}&page=1&page_size={{ size }}" class="btn {% if logs.page_size == size %}btn-primary{% else %}btn-outline{% endif %} btn-sm">{{ size }}</a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="surface">
+  <div class="surface-header">
+    <div>
+      {% if logs.kind == 'audit' %}
+        <h2 class="surface-title">审计日志</h2>
+        <div class="section-note">登录、鉴权失败、删除、清空、重建、写入等关键操作。</div>
+      {% elif logs.kind == 'search' %}
+        <h2 class="surface-title">搜索日志</h2>
+        <div class="section-note">用于排查搜索质量、过滤条件和延迟。</div>
+      {% elif logs.kind == 'errors' %}
+        <h2 class="surface-title">错误日志</h2>
+        <div class="section-note">应用主动捕获的异常，普通访问日志不在这里。</div>
+      {% else %}
+        <h2 class="surface-title">导入任务</h2>
+        <div class="section-note">批量上传文件的结果摘要和失败行下载入口。</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if logs.kind == 'audit' %}
+    {% if logs.audit_logs %}
+    <div class="table-scroll" style="margin-top:18px">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>时间</th>
+            <th>级别</th>
+            <th>事件</th>
+            <th>操作者</th>
+            <th>请求</th>
+            <th>目标</th>
+            <th>详情</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in logs.audit_logs %}
+          <tr class="{% if item.level in ['warning', 'error', 'critical'] %}is-danger{% endif %}">
+            <td>{{ logs.offset + loop.index }}</td>
+            <td class="mono-cell">{{ item.created_at or item.ts }}</td>
+            <td><span class="tag-badge">{{ item.level }}</span></td>
+            <td class="log-cell-primary">{{ item.event }}</td>
+            <td>{{ item.actor or 'unknown' }}</td>
+            <td>
+              <div class="log-detail">{{ item.method or '-' }} {{ item.path or '-' }}</div>
+              {% if item.client_ip %}<div class="log-detail">ip={{ item.client_ip }}</div>{% endif %}
+              {% if item.request_id %}<div class="log-detail">rid={{ item.request_id }}</div>{% endif %}
+            </td>
+            <td>
+              <div>{{ item.target_type or '-' }}</div>
+              {% if item.target_id %}<div class="log-detail">{{ item.target_id }}</div>{% endif %}
+            </td>
+            <td>
+              {% if item.metadata %}
+                {% for key, value in item.metadata.items() %}
+                  <div class="log-detail">{{ key }}={{ value }}</div>
+                {% endfor %}
+              {% else %}
+                <span class="log-detail">-</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无审计日志。</div>
+    {% endif %}
+  {% elif logs.kind == 'search' %}
+    {% if logs.search_logs %}
+    <div class="table-scroll" style="margin-top:18px">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>时间</th>
+            <th>入口</th>
+            <th>查询</th>
+            <th>过滤</th>
+            <th>结果</th>
+            <th>延迟</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in logs.search_logs %}
+          <tr>
+            <td>{{ logs.offset + loop.index }}</td>
+            <td class="mono-cell">{{ item.created_at }}</td>
+            <td><span class="tag-badge">{{ item.payload.surface or 'api' }}</span></td>
+            <td class="log-cell-primary">{{ item.query }}</td>
+            <td><div class="log-detail">{{ item.payload.filter or {} }}</div></td>
+            <td>{{ item.payload.result_count or 0 }}</td>
+            <td>{{ item.payload.latency_ms or '-' }} ms</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无搜索日志。</div>
+    {% endif %}
+  {% elif logs.kind == 'errors' %}
+    {% if logs.error_logs %}
+    <div class="table-scroll" style="margin-top:18px">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>时间</th>
+            <th>后端</th>
+            <th>操作</th>
+            <th>入口</th>
+            <th>错误</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in logs.error_logs %}
+          <tr class="is-danger">
+            <td>{{ logs.offset + loop.index }}</td>
+            <td class="mono-cell">{{ item.created_at }}</td>
+            <td>{{ item.backend }}</td>
+            <td>{{ item.operation or item.payload.operation or 'unknown' }}</td>
+            <td>{{ item.surface or item.payload.surface or 'system' }}</td>
+            <td class="log-cell-primary">{{ item.error }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无错误日志。</div>
+    {% endif %}
+  {% else %}
+    {% if logs.import_jobs %}
+    <div class="table-scroll" style="margin-top:18px">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>时间</th>
+            <th>状态</th>
+            <th>文件</th>
+            <th>统计</th>
+            <th>任务</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in logs.import_jobs %}
+          <tr class="{% if item.failed %}is-danger{% endif %}">
+            <td>{{ logs.offset + loop.index }}</td>
+            <td class="mono-cell">{{ item.created_at }}</td>
+            <td><span class="tag-badge">{{ item.status }}</span></td>
+            <td class="log-cell-primary">{{ item.source_filename }}</td>
+            <td>
+              <div class="log-detail">inserted={{ item.inserted }}</div>
+              <div class="log-detail">skipped={{ item.skipped }}</div>
+              <div class="log-detail">failed={{ item.failed }}</div>
+            </td>
+            <td>
+              <div class="log-detail">{{ item.job_id }}</div>
+              {% if item.failed_rows_download_url %}<a class="muted-link" href="{{ item.failed_rows_download_url }}">下载失败行 CSV</a>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="margin-top:18px">暂无导入任务。</div>
+    {% endif %}
+  {% endif %}
+</section>
+
+<section class="surface">
+  <div class="pagination">
+    <div class="pagination-summary">
+      共 {{ logs.total }} 条 · 第 {{ logs.page }} / {{ logs.total_pages }} 页
+    </div>
+    <div class="pager-controls">
+      {% if logs.has_prev %}
+      <a href="/logs?kind={{ logs.kind }}&page={{ logs.page - 1 }}&page_size={{ logs.page_size }}" class="btn btn-outline btn-sm">上一页</a>
+      {% endif %}
+      {% if logs.has_next %}
+      <a href="/logs?kind={{ logs.kind }}&page={{ logs.page + 1 }}&page_size={{ logs.page_size }}" class="btn btn-outline btn-sm">下一页</a>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% endblock %}

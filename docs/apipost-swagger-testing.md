@@ -21,9 +21,15 @@
 以 Qdrant 为例，先启动数据库容器和 Web API：
 
 ```bash
-cd /Users/block/Project/semantic-sandbox/qdrant-service
-make start
-make web
+cd /Users/block/Project/semantic-sandbox
+cp .env.example .env
+# 修改 .env：POSTGRES_PASSWORD、DATABASE_URL、API_KEY、WEB_PASSWORD、WEB_SESSION_SECRET
+docker compose up -d
+source .venv/bin/activate
+python scripts/init_postgres.py
+
+cd qdrant-service
+uvicorn src.app:app --reload --port 8888
 ```
 
 启动后访问：
@@ -47,6 +53,8 @@ make web
 > 注意：`/docs` 是 Swagger 页面，给人看的；`/openapi.json` 是 OpenAPI 定义，给工具导入用。
 >
 > 如果 `.env` 开启了 `WEB_AUTH_ENABLED=1`，`/docs` 和 `/openapi.json` 会先要求 Web 登录。ApiPost 直接 URL 导入受限时，开发环境可临时设 `WEB_AUTH_ENABLED=0` 重新启动服务后导入；生产环境不要为了导入接口长期关闭 Web 登录态。
+>
+> Web 登录账号来自 `.env` 的 `WEB_USERNAME` / `WEB_PASSWORD`。REST API 请求仍然使用 `X-API-Key`，两套鉴权不要混用。
 
 ### 3.3 建议配置环境变量
 
@@ -72,6 +80,15 @@ X-API-Key: {{api_key}}
 ```
 
 切换后端时只换变量即可。
+
+日志页面不作为 ApiPost 对接接口，但联调排障时可以在浏览器查看：
+
+```text
+http://localhost:8888/logs?kind=audit&page=1&page_size=25
+http://localhost:8888/logs?kind=search&page=1&page_size=25
+http://localhost:8888/logs?kind=errors&page=1&page_size=25
+http://localhost:8888/logs?kind=imports&page=1&page_size=25
+```
 
 ## 4. 推荐测试顺序
 

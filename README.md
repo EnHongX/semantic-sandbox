@@ -76,7 +76,7 @@
 | 元数据过滤 | Web/API 支持 `categories[]`、`tags[]`、`created_at_from`、`created_at_to`；命令行示例保留 `category` 演示 |
 | 数据管理 | 文档分页、按 ID 查看、单条更新/删除、批量删除、批量重建；PostgreSQL `documents` 表为元数据主表 |
 | 访问控制 | Web UI 使用签名 Cookie 登录态；REST API 使用 `X-API-Key` |
-| 运维辅助 | `/health`、`/api/health/panel`、`/api/model/status`、搜索审计日志、应用错误日志、Makefile 常用命令、三库性能基准测试 |
+| 运维辅助 | `/health`、`/api/health/panel`、`/logs`、`/api/model/status`、审计日志、搜索日志、应用错误日志、Makefile 常用命令、三库性能基准测试 |
 
 边界也要明确：当前服务已经具备数据库持久化、索引重建、健康检查、基础审计日志、Web UI 登录态和 REST API Key 鉴权，但还没有多租户、限流和告警。正式部署仍建议把 Web/API 放在内网、VPN、网关或反向代理后面。
 
@@ -88,10 +88,13 @@
 
 ### 2026-04-27 产品化补充
 
-- Web UI 登录态：新增共享登录模块，三套服务统一支持 `/login`、`/logout` 和签名 Cookie 会话；未登录访问 `/`、`/ingest`、`/documents`、`/health/panel`、`/docs` 会跳转登录页，`/health` 保持公开用于探活。
+- Web UI 登录态：新增共享登录模块，三套服务统一支持 `/login`、`/logout` 和签名 Cookie 会话；顶部导航增加“退出登录”入口；未登录访问 `/`、`/ingest`、`/documents`、`/health/panel`、`/logs`、`/docs` 会跳转登录页，`/health` 保持公开用于探活。
+- 日志入库：新增 `audit_logs` 表，登录、登出、鉴权失败、写入、上传、删除、清空、重建索引等关键事件写入 PostgreSQL；普通访问日志不入库，交给 Docker / Nginx / 日志系统。
+- Web 日志页：新增 `/logs`，支持查看审计日志、搜索日志、错误日志和导入任务摘要；当前已改为表格列表展示，并支持 `page` / `page_size` 分页。
 - 鉴权分层：浏览器页面使用 `WEB_*` 配置；REST API 仍使用 `AUTH_ENABLED`、`API_KEY`、`API_KEY_HEADER`，两者互不替代。
 - 配置模板：根 `.env.example` 和三套 service `.env.example` 补齐 Web UI 登录态、PostgreSQL、Compose profiles、向量后端端口和模型离线加载配置。
-- 文档整理：根 README 增加配置总览和文档索引，`docs/postgres.md`、`docs/api-reference.md`、`docs/apipost-swagger-testing.md` 同步说明 Web 登录态与 API Key 的使用边界。
+- Docker 部署：根 Compose 默认可同时启动 PostgreSQL + 三套向量后端，并修正 Qdrant / Weaviate / MinIO healthcheck，避免镜像内缺少 `curl` 导致假 `unhealthy`。
+- 文档整理：根 README 增加配置总览、详细部署和文档索引；`docs/postgres.md`、`docs/api-reference.md`、`docs/apipost-swagger-testing.md` 同步说明 Web 登录态、API Key、日志分页和 `.env` 配置边界。
 
 ### 2026-04-24 补充同步
 
@@ -141,6 +144,15 @@ WEB_SESSION_HTTPS_ONLY=1
 
 `WEB_SESSION_HTTPS_ONLY=1` 只应在 HTTPS 反向代理已经就绪后开启；本地 HTTP 调试保持 `0`。
 
+如果本机端口被占用，直接在 `.env` 改宿主机端口，并同步对应连接串。例如本机已有 PostgreSQL 和 Qdrant：
+
+```env
+POSTGRES_PORT=15432
+DATABASE_URL=postgresql://sandbox:replace_with_strong_password@localhost:15432/semantic_sandbox
+QDRANT_PORT=16333
+QDRANT_GRPC_PORT=16334
+```
+
 三套服务如果共用同一份根 `.env`，可以共用 `WEB_SESSION_COOKIE` 和 `WEB_SESSION_SECRET`；如果分别部署且会话密钥不同，建议给每个服务配置不同的 `WEB_SESSION_COOKIE`，避免同域 Cookie 互相覆盖。
 
 ---
@@ -174,7 +186,7 @@ WEB_SESSION_HTTPS_ONLY=1
 python3 --version && docker --version && docker compose version
 ```
 
-### 三步部署
+### 四步部署
 
 ```bash
 # 步骤 1：准备嵌入模型（只需做一次）
@@ -187,10 +199,14 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install sentence-transformers python-dotenv   # 约 1-2GB，需几分钟
 python scripts/preload_model.py                   # 从 HuggingFace/镜像下载模型到 ./models/（约 185MB）
 
-# 步骤 2：启动 PostgreSQL + 向量数据库
+# 步骤 2：复制并修改配置
 cp .env.example .env
-# .env 默认 COMPOSE_PROFILES=qdrant,weaviate,milvus，会同时启动三套向量后端
+# 至少修改 POSTGRES_PASSWORD、DATABASE_URL、API_KEY、WEB_PASSWORD、WEB_SESSION_SECRET
+# .env 默认 COMPOSE_PROFILES=qdrant,weaviate,milvus
+
+# 步骤 3：启动 PostgreSQL + 向量数据库
 docker compose up -d
+docker compose ps
 
 # 只想启动 Qdrant 时，把 .env 改成 COMPOSE_PROFILES=qdrant，再执行：
 # docker compose up -d
@@ -199,7 +215,7 @@ cd qdrant-service
 pip install -r requirements.txt                   # 装 Python 客户端
 make init-db                                      # 初始化 PostgreSQL 表结构
 
-# 步骤 3：入库 + 搜索
+# 步骤 4：入库 + 搜索
 python -m src.ingest                              # 文本 → 向量 → 写入数据库
 python -m src.search                              # 交互式语义搜索
 ```
@@ -259,6 +275,15 @@ WEB_SESSION_SECRET=change_me_to_a_long_random_session_secret
 
 - 展示数据库状态、模型状态、元数据数量、向量数量
 - 展示当前后端最近错误，便于定位搜索、写入、重建失败
+
+日志页支持：
+
+- `/logs?kind=audit&page=1&page_size=25` 查看登录、鉴权失败、写入、删除、清空、重建等审计事件
+- `/logs?kind=search&page=1&page_size=25` 查看当前后端搜索日志、过滤条件、结果数和延迟
+- `/logs?kind=errors&page=1&page_size=25` 查看应用错误
+- `/logs?kind=imports&page=1&page_size=25` 查看批量导入任务摘要和失败行下载入口
+
+页面支持每页 `10`、`25`、`50`、`100` 条切换；表格里会展示时间、事件、操作者、请求、目标和摘要详情。
 
 写入页支持：
 
@@ -461,7 +486,7 @@ P0 相关接口已经统一到三套服务：
 | `GET` | `/api/import-jobs/{job_id}` | 查看批量导入任务状态 |
 | `GET` | `/api/import-jobs/{job_id}/failed-rows` | 下载批量导入失败行 CSV |
 
-搜索审计日志和应用层错误会写入 PostgreSQL，用于健康面板展示最近错误和排查慢查询。
+搜索日志、审计日志和应用层错误会写入 PostgreSQL，用于日志页展示、健康面板展示最近错误和排查慢查询。
 
 **响应：**
 
@@ -600,7 +625,7 @@ Memory: +42MB
 | `data/sample_zh.json` | 10 | 中文 | 中文语义检索示例数据，不含 `category` 字段 |
 | `data/sample_large_en.json` | 100 | 英文 | 8 个分类（technology / science / geography / history / food / sports / art / nature），ID 从 101 起，适合演示过滤检索 |
 
-通过 Web UI 或 REST API 写入的自定义文本会先写入 PostgreSQL `documents` 表，并记录向量同步状态；搜索日志、应用错误和导入任务摘要会写入 PostgreSQL，导入失败行 CSV 会写入 `data/import_reports/`。本地运行产物已加入 `.gitignore`，不会进仓库。
+通过 Web UI 或 REST API 写入的自定义文本会先写入 PostgreSQL `documents` 表，并记录向量同步状态；审计日志、搜索日志、应用错误和导入任务摘要会写入 PostgreSQL，导入失败行 CSV 会写入 `data/import_reports/`。本地运行产物已加入 `.gitignore`，不会进仓库。
 
 ---
 
@@ -775,16 +800,48 @@ docker exec -it sandbox-qdrant sh                              # 进入容器调
 
 ## 服务器部署
 
-> 本项目默认面向本地学习场景。如需部署到服务器（让团队远程访问），参考以下步骤。
+> 本项目可以单机部署为团队内部工具。当前推荐形态是：Docker Compose 管 PostgreSQL 和向量数据库，FastAPI 用 systemd 运行在宿主机，外层用 Nginx/HTTPS 暴露 Web UI。
 
 ### 基础部署
 
 1. 确保服务器已安装 Docker Compose v2、Python 3.10+。
 2. 克隆项目并按[快速上手](#快速上手)完成模型下载和依赖安装。
-3. 后台运行 uvicorn：
+3. 复制 `.env.example`：
+
+```bash
+cp .env.example .env
+```
+
+4. 修改 `.env` 里的必改项：
+
+```env
+APP_ENV=production
+POSTGRES_PASSWORD=replace_with_strong_password
+DATABASE_URL=postgresql://sandbox:replace_with_strong_password@localhost:5432/semantic_sandbox
+API_KEY=replace_with_long_random_api_key
+WEB_USERNAME=admin
+WEB_PASSWORD=replace_with_strong_web_password
+WEB_SESSION_SECRET=replace_with_long_random_session_secret
+WEB_SESSION_HTTPS_ONLY=1
+COMPOSE_PROFILES=qdrant,weaviate,milvus
+```
+
+如果只部署一个后端，把 `COMPOSE_PROFILES` 改成 `qdrant`、`weaviate` 或 `milvus`。如果服务器已有 PostgreSQL / Qdrant 等端口占用，改 `POSTGRES_PORT`、`QDRANT_PORT` 等宿主机端口，并同步 `DATABASE_URL` / service `.env`。
+
+5. 启动依赖并初始化表：
+
+```bash
+docker compose up -d
+docker compose ps
+source .venv/bin/activate
+python scripts/init_postgres.py
+```
+
+6. 后台运行 uvicorn：
 
 ```bash
 # nohup 简单后台运行
+cd qdrant-service
 nohup uvicorn src.app:app --host 0.0.0.0 --port 8888 > app.log 2>&1 &
 echo $! > app.pid
 
@@ -821,6 +878,14 @@ sudo systemctl enable --now qdrant-service
 sudo systemctl status qdrant-service
 journalctl -u qdrant-service -f          # 查看日志
 ```
+
+Weaviate / Milvus 可按同样方式增加 systemd 服务，只需要改 `WorkingDirectory` 和端口：
+
+| 服务 | WorkingDirectory | 端口 |
+|---|---|---|
+| Qdrant | `/path/to/semantic-sandbox/qdrant-service` | `8888` |
+| Weaviate | `/path/to/semantic-sandbox/weaviate-service` | `8889` |
+| Milvus | `/path/to/semantic-sandbox/milvus-service` | `8890` |
 
 ### Nginx 反向代理
 
@@ -864,9 +929,9 @@ sudo ufw enable
 > ⚠️ **注意事项**：
 > - Qdrant（6333）、Weaviate（8080）、Milvus（19530）端口**不要对外暴露**，默认无鉴权。
 > - REST API 默认启用 `X-API-Key` 鉴权，密钥从 `.env` 的 `API_KEY` 读取；`/health` 保持公开用于探活。
-> - Web UI 默认启用登录态，账号、密码和会话密钥从 `.env` 的 `WEB_USERNAME`、`WEB_PASSWORD`、`WEB_SESSION_SECRET` 读取。
+> - Web UI 默认启用登录态，账号、密码和会话密钥从 `.env` 的 `WEB_USERNAME`、`WEB_PASSWORD`、`WEB_SESSION_SECRET` 读取；浏览器访问 `/login` 登录，顶部“退出登录”会访问 `/logout`。
 > - Web 登录态不是企业 SSO / RBAC；正式部署仍建议加 HTTPS、网关访问控制和访问日志。
-> - 数据持久化在 Docker Volume，可用 `docker volume ls` 查看，定期备份。
+> - PostgreSQL 数据默认持久化在 `data/postgres/`，Qdrant / Weaviate / Milvus 数据在各 service 目录的持久化目录，定期备份。
 
 ### 健康监控
 

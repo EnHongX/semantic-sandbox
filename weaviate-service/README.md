@@ -317,9 +317,10 @@ uvicorn src.app:app --reload --port 8889
 | <http://localhost:8889/ingest> | 写入页面（逐行写入、JSON/CSV 上传、拖拽上传、导入状态统计） |
 | <http://localhost:8889/documents> | 文档管理页（分页查看、单条编辑、批量删除、批量重建） |
 | <http://localhost:8889/health/panel> | 健康面板（DB / 模型 / 记录数 / 最近错误） |
+| <http://localhost:8889/logs> | 日志页（审计 / 搜索 / 错误 / 导入任务） |
 | <http://localhost:8889/docs> | Swagger API 文档 |
 
-开启 `WEB_AUTH_ENABLED=1` 后，Web UI、Swagger UI 和 HTML 表单提交需要先访问 `/login` 登录；退出访问 `/logout`。程序调用 `/api/*` 仍使用 `AUTH_ENABLED` / `API_KEY` / `API_KEY_HEADER`。
+开启 `WEB_AUTH_ENABLED=1` 后，Web UI、Swagger UI 和 HTML 表单提交需要先访问 `/login` 登录；顶部导航提供“退出登录”，也可以直接访问 `/logout`。程序调用 `/api/*` 仍使用 `AUTH_ENABLED` / `API_KEY` / `API_KEY_HEADER`。
 
 ---
 
@@ -481,7 +482,7 @@ curl -X POST http://localhost:8889/api/search \
 | `GET` | `/api/import-jobs/{job_id}` | 查看导入任务状态 |
 | `GET` | `/api/import-jobs/{job_id}/failed-rows` | 下载失败行 CSV |
 
-搜索审计日志、应用错误和导入任务摘要会写入 PostgreSQL，健康面板直接读取最近错误摘要。
+审计日志、搜索日志、应用错误和导入任务摘要会写入 PostgreSQL，日志页可直接查看；健康面板读取最近错误摘要。
 
 ---
 

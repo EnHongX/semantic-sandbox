@@ -133,6 +133,20 @@ def _json_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _limit(value: int, *, default: int = 50, max_value: int = 200) -> int:
+    try:
+        return min(max(int(value), 1), max_value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _offset(value: int) -> int:
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def load_documents() -> list[dict]:
     ensure_schema()
     with _get_pool().connection() as conn:
@@ -425,6 +439,56 @@ def save_search_log(entry: dict) -> None:
         conn.commit()
 
 
+def count_search_logs(*, backend: str = "") -> int:
+    ensure_schema()
+    backend = str(backend or "").strip()
+    params: list[Any] = []
+    where = ""
+    if backend:
+        where = "WHERE backend = %s"
+        params.append(backend)
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(f"SELECT COUNT(*) AS total FROM search_logs {where}", params)
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_search_logs(*, backend: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    backend = str(backend or "").strip()
+    params: list[Any] = []
+    where = ""
+    if backend:
+        where = "WHERE backend = %s"
+        params.append(backend)
+    params.extend([_limit(limit), _offset(offset)])
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(
+                f"""
+                SELECT id, backend, query, payload, created_at
+                FROM search_logs
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s
+                OFFSET %s
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "backend": str(row.get("backend") or ""),
+            "query": str(row.get("query") or ""),
+            "payload": dict(row.get("payload") or {}),
+            "created_at": _iso(row.get("created_at")),
+        }
+        for row in rows
+    ]
+
+
 def save_error_log(entry: dict) -> None:
     ensure_schema()
     payload = {"ts": _iso(datetime.now(timezone.utc)), **entry}
@@ -446,16 +510,160 @@ def save_error_log(entry: dict) -> None:
         conn.commit()
 
 
-def recent_errors(limit: int = 10) -> list[dict]:
+def count_error_logs(*, backend: str = "") -> int:
     ensure_schema()
+    backend = str(backend or "").strip()
+    params: list[Any] = []
+    where = ""
+    if backend:
+        where = "WHERE backend = %s"
+        params.append(backend)
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(f"SELECT COUNT(*) AS total FROM app_errors {where}", params)
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_error_logs(*, backend: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    backend = str(backend or "").strip()
+    params: list[Any] = []
+    where = ""
+    if backend:
+        where = "WHERE backend = %s"
+        params.append(backend)
+    params.extend([_limit(limit), _offset(offset)])
     with _get_pool().connection() as conn:
         with conn.cursor(row_factory=_dict_row()) as cur:
             cur.execute(
-                "SELECT payload FROM app_errors ORDER BY created_at DESC LIMIT %s",
-                (min(max(limit, 1), 100),),
+                f"""
+                SELECT id, backend, operation, surface, error, payload, created_at
+                FROM app_errors
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s
+                OFFSET %s
+                """,
+                params,
             )
             rows = cur.fetchall()
-    return [dict(row["payload"]) for row in rows]
+    return [
+        {
+            "id": int(row["id"]),
+            "backend": str(row.get("backend") or ""),
+            "operation": str(row.get("operation") or ""),
+            "surface": str(row.get("surface") or ""),
+            "error": str(row.get("error") or ""),
+            "payload": dict(row.get("payload") or {}),
+            "created_at": _iso(row.get("created_at")),
+        }
+        for row in rows
+    ]
+
+
+def recent_errors(limit: int = 10) -> list[dict]:
+    return [dict(item["payload"]) for item in list_error_logs(limit=limit)]
+
+
+def save_audit_log(entry: dict) -> None:
+    ensure_schema()
+    metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+    with _get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO audit_logs (
+                    event, level, actor, backend, request_id, method, path,
+                    client_ip, user_agent, target_type, target_id, metadata, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
+                """,
+                (
+                    str(entry.get("event", "")),
+                    str(entry.get("level", "info")),
+                    str(entry.get("actor", "")),
+                    str(entry.get("backend", "")),
+                    str(entry.get("request_id", "")),
+                    str(entry.get("method", "")),
+                    str(entry.get("path", "")),
+                    str(entry.get("client_ip", "")),
+                    str(entry.get("user_agent", "")),
+                    str(entry.get("target_type", "")),
+                    str(entry.get("target_id", "")),
+                    _json_value(metadata),
+                ),
+            )
+        conn.commit()
+
+
+def count_audit_logs(*, backend: str = "", event: str = "") -> int:
+    ensure_schema()
+    where_parts: list[str] = []
+    params: list[Any] = []
+    backend = str(backend or "").strip()
+    event = str(event or "").strip()
+    if backend:
+        where_parts.append("backend = %s")
+        params.append(backend)
+    if event:
+        where_parts.append("event = %s")
+        params.append(event)
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(f"SELECT COUNT(*) AS total FROM audit_logs {where}", params)
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    where_parts: list[str] = []
+    params: list[Any] = []
+    backend = str(backend or "").strip()
+    event = str(event or "").strip()
+    if backend:
+        where_parts.append("backend = %s")
+        params.append(backend)
+    if event:
+        where_parts.append("event = %s")
+        params.append(event)
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.extend([_limit(limit), _offset(offset)])
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM audit_logs
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s
+                OFFSET %s
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "event": str(row.get("event") or ""),
+            "level": str(row.get("level") or ""),
+            "actor": str(row.get("actor") or ""),
+            "backend": str(row.get("backend") or ""),
+            "request_id": str(row.get("request_id") or ""),
+            "method": str(row.get("method") or ""),
+            "path": str(row.get("path") or ""),
+            "client_ip": str(row.get("client_ip") or ""),
+            "user_agent": str(row.get("user_agent") or ""),
+            "target_type": str(row.get("target_type") or ""),
+            "target_id": str(row.get("target_id") or ""),
+            "metadata": dict(row.get("metadata") or {}),
+            "created_at": _iso(row.get("created_at")),
+        }
+        for row in rows
+    ]
 
 
 def save_import_job(summary: dict, errors: list[dict]) -> None:
@@ -503,3 +711,30 @@ def load_import_job(job_id: str) -> dict | None:
             cur.execute("SELECT summary FROM import_jobs WHERE job_id = %s", (job_id,))
             row = cur.fetchone()
     return dict(row["summary"]) if row else None
+
+
+def count_import_jobs() -> int:
+    ensure_schema()
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute("SELECT COUNT(*) AS total FROM import_jobs")
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_import_jobs(limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(
+                """
+                SELECT summary
+                FROM import_jobs
+                ORDER BY created_at DESC
+                LIMIT %s
+                OFFSET %s
+                """,
+                (_limit(limit), _offset(offset)),
+            )
+            rows = cur.fetchall()
+    return [dict(row["summary"]) for row in rows]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import html
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from urllib.parse import quote, urlsplit
 
@@ -70,6 +71,34 @@ def _is_public_request(request: Request) -> bool:
 
 def _is_authenticated(request: Request) -> bool:
     return bool(request.session.get(_SESSION_USER_KEY))
+
+
+def _safe_audit_log(
+    request: Request,
+    *,
+    event: str,
+    level: str = "info",
+    actor: str = "",
+    target_type: str = "web",
+    target_id: str = "",
+    metadata: dict | None = None,
+) -> None:
+    try:
+        from semantic_sandbox_common import append_audit_log, request_log_context
+        from semantic_sandbox_postgres import current_vector_backend
+
+        append_audit_log({
+            **request_log_context(request),
+            "event": event,
+            "level": level,
+            "actor": actor or "web:anonymous",
+            "backend": current_vector_backend(""),
+            "target_type": target_type,
+            "target_id": target_id,
+            "metadata": metadata or {},
+        })
+    except Exception:
+        return
 
 
 def _login_page(*, next_path: str, error: str = "") -> str:
@@ -198,31 +227,66 @@ def install_web_login_auth(app: FastAPI) -> None:
             password = str(form.get("password", ""))
             next_path = _safe_next_path(str(form.get("next", "/")))
         except Exception:
+            _safe_audit_log(request, event="web_login_bad_request", level="warning")
             return HTMLResponse(_login_page(next_path="/", error="登录请求无效"), status_code=400)
 
         expected_password = web_password()
         if not web_auth_enabled():
             return RedirectResponse(next_path, status_code=303)
         if not expected_password:
+            _safe_audit_log(
+                request,
+                event="web_login_config_missing",
+                level="error",
+                actor=f"web:{username}" if username else "web:anonymous",
+                metadata={"username": username, "next": next_path},
+            )
             return HTMLResponse(_login_page(next_path=next_path, error="服务端未配置 WEB_PASSWORD"), status_code=500)
         if not hmac.compare_digest(username, web_username()) or not hmac.compare_digest(password, expected_password):
+            _safe_audit_log(
+                request,
+                event="web_login_failed",
+                level="warning",
+                actor=f"web:{username}" if username else "web:anonymous",
+                metadata={"username": username, "next": next_path},
+            )
             return HTMLResponse(_login_page(next_path=next_path, error="用户名或密码错误"), status_code=401)
 
         request.session[_SESSION_USER_KEY] = username
+        _safe_audit_log(
+            request,
+            event="web_login_success",
+            actor=f"web:{username}",
+            metadata={"username": username, "next": next_path},
+        )
         return RedirectResponse(next_path, status_code=303)
 
     @app.api_route("/logout", methods=["GET", "POST"], include_in_schema=False)
     async def logout(request: Request):
+        actor = f"web:{request.session.get(_SESSION_USER_KEY, '')}" if request.session.get(_SESSION_USER_KEY) else "web:anonymous"
         request.session.clear()
+        _safe_audit_log(request, event="web_logout", actor=actor)
         target = "/login" if web_auth_enabled() else "/"
         return RedirectResponse(target, status_code=303)
 
     @app.middleware("http")
     async def web_login_auth(request: Request, call_next: Callable[[Request], Awaitable]):
+        request.state.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         if not web_auth_enabled() or _is_public_request(request) or _is_authenticated(request):
-            return await call_next(request)
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request.state.request_id
+            return response
         next_path = quote(_path_with_query(request), safe="")
-        return RedirectResponse(f"/login?next={next_path}", status_code=303)
+        _safe_audit_log(
+            request,
+            event="web_unauthenticated",
+            level="warning",
+            target_id=request.url.path,
+            metadata={"next": _path_with_query(request)},
+        )
+        response = RedirectResponse(f"/login?next={next_path}", status_code=303)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
 
     app.add_middleware(
         SessionMiddleware,

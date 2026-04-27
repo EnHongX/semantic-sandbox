@@ -68,3 +68,26 @@ CREATE TABLE IF NOT EXISTS app_errors (
 
 CREATE INDEX IF NOT EXISTS idx_app_errors_created_at ON app_errors (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_app_errors_backend_created_at ON app_errors (backend, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    event TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT 'info',
+    actor TEXT NOT NULL DEFAULT '',
+    backend TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT audit_logs_level_check
+        CHECK (level IN ('debug', 'info', 'warning', 'error', 'critical'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_backend_created_at ON audit_logs (backend, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_event_created_at ON audit_logs (event, created_at DESC);

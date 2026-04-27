@@ -291,15 +291,27 @@ def append_audit_log(entry: dict) -> None:
         print(f"audit log write failed: {exc}", file=sys.stderr)
 
 
-def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50) -> list[dict]:
+def count_audit_logs(*, backend: str = "", event: str = "") -> int:
     if _postgres_enabled():
-        return _pg().list_audit_logs(backend=backend, event=event, limit=limit)
-    rows = _read_jsonl(AUDIT_LOG_FILE, limit=limit)
+        return _pg().count_audit_logs(backend=backend, event=event)
+    rows = _read_jsonl(AUDIT_LOG_FILE, limit=10000)
     if backend:
         rows = [row for row in rows if row.get("backend") == backend]
     if event:
         rows = [row for row in rows if row.get("event") == event]
-    return rows
+    return len(rows)
+
+
+def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_audit_logs(backend=backend, event=event, limit=limit, offset=offset)
+    offset = max(int(offset or 0), 0)
+    rows = _read_jsonl(AUDIT_LOG_FILE, limit=10000)
+    if backend:
+        rows = [row for row in rows if row.get("backend") == backend]
+    if event:
+        rows = [row for row in rows if row.get("event") == event]
+    return rows[offset:offset + min(max(limit, 1), 200)]
 
 
 def append_error_log(entry: dict) -> None:
@@ -318,10 +330,20 @@ def recent_errors(limit: int = 10) -> list[dict]:
     return _read_jsonl(ERROR_LOG_FILE, limit=limit)
 
 
-def list_error_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
+def count_error_logs(*, backend: str = "") -> int:
     if _postgres_enabled():
-        return _pg().list_error_logs(backend=backend, limit=limit)
-    rows = _read_jsonl(ERROR_LOG_FILE, limit=limit)
+        return _pg().count_error_logs(backend=backend)
+    rows = _read_jsonl(ERROR_LOG_FILE, limit=10000)
+    if backend:
+        rows = [row for row in rows if row.get("backend") == backend]
+    return len(rows)
+
+
+def list_error_logs(*, backend: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_error_logs(backend=backend, limit=limit, offset=offset)
+    offset = max(int(offset or 0), 0)
+    rows = _read_jsonl(ERROR_LOG_FILE, limit=10000)
     if backend:
         rows = [row for row in rows if row.get("backend") == backend]
     return [
@@ -333,7 +355,7 @@ def list_error_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
             "payload": row,
             "created_at": str(row.get("ts", "")),
         }
-        for row in rows
+        for row in rows[offset:offset + min(max(limit, 1), 200)]
     ]
 
 
@@ -872,10 +894,20 @@ def append_search_log(entry: dict) -> None:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def list_search_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
+def count_search_logs(*, backend: str = "") -> int:
     if _postgres_enabled():
-        return _pg().list_search_logs(backend=backend, limit=limit)
-    rows = _read_jsonl(SEARCH_LOG_FILE, limit=limit)
+        return _pg().count_search_logs(backend=backend)
+    rows = _read_jsonl(SEARCH_LOG_FILE, limit=10000)
+    if backend:
+        rows = [row for row in rows if row.get("backend") == backend]
+    return len(rows)
+
+
+def list_search_logs(*, backend: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_search_logs(backend=backend, limit=limit, offset=offset)
+    offset = max(int(offset or 0), 0)
+    rows = _read_jsonl(SEARCH_LOG_FILE, limit=10000)
     if backend:
         rows = [row for row in rows if row.get("backend") == backend]
     return [
@@ -885,7 +917,7 @@ def list_search_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
             "payload": row,
             "created_at": str(row.get("ts", "")),
         }
-        for row in rows
+        for row in rows[offset:offset + min(max(limit, 1), 200)]
     ]
 
 
@@ -956,19 +988,27 @@ def load_import_job(job_id: str) -> dict | None:
     return data[0] if data else None
 
 
-def list_import_jobs(limit: int = 50) -> list[dict]:
+def count_import_jobs() -> int:
     if _postgres_enabled():
-        return _pg().list_import_jobs(limit=limit)
+        return _pg().count_import_jobs()
+    return len(list(IMPORT_REPORT_DIR.glob("*.json"))) if IMPORT_REPORT_DIR.exists() else 0
+
+
+def list_import_jobs(limit: int = 50, offset: int = 0) -> list[dict]:
+    if _postgres_enabled():
+        return _pg().list_import_jobs(limit=limit, offset=offset)
     rows: list[dict] = []
+    offset = max(int(offset or 0), 0)
+    max_items = offset + min(max(limit, 1), 200)
     if not IMPORT_REPORT_DIR.exists():
         return rows
     for path in sorted(IMPORT_REPORT_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
         data = _read_json_list(path)
         if data:
             rows.append(data[0])
-        if len(rows) >= min(max(limit, 1), 200):
+        if len(rows) >= max_items:
             break
-    return rows
+    return rows[offset:max_items]
 
 
 def import_job_failed_rows_path(job_id: str) -> Path:

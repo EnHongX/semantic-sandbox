@@ -6,8 +6,10 @@ PostgreSQL 是本项目的业务元数据主库；Qdrant / Weaviate / Milvus 只
 
 ```bash
 cp .env.example .env
+# 至少修改 POSTGRES_PASSWORD、DATABASE_URL、API_KEY、WEB_PASSWORD、WEB_SESSION_SECRET
 # .env 默认 COMPOSE_PROFILES=qdrant,weaviate,milvus，会同时启动三套向量后端
 docker compose up -d
+docker compose ps
 source .venv/bin/activate
 python scripts/init_postgres.py
 ```
@@ -33,6 +35,7 @@ COMPOSE_PROFILES=qdrant,weaviate,milvus
 |---|---|
 | `METADATA_STORE=postgres` | 启用 PostgreSQL 元数据主库 |
 | `DATABASE_URL` | API / 脚本连接 PostgreSQL 的 DSN |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_PORT` | Docker PostgreSQL 数据库名、账号、密码和宿主机端口 |
 | `VECTOR_BACKEND` | 当前写入的向量后端：`qdrant` / `weaviate` / `milvus` |
 | `COMPOSE_PROFILES` | Docker Compose 启动哪些向量后端 |
 | `QDRANT_PORT` / `WEAVIATE_HTTP_PORT` / `MILVUS_PORT` | 向量服务映射到宿主机的端口 |
@@ -62,6 +65,35 @@ COMPOSE_PROFILES=qdrant,weaviate,milvus
 | `app_errors` | 应用错误日志 |
 
 普通访问日志不写入 PostgreSQL，建议由 Docker、Nginx 或日志系统收集。数据库只保存有审计、恢复、排障价值的日志，且不记录密码、完整 API Key 和全文请求体。
+
+Web UI 日志页入口：
+
+```text
+/logs?kind=audit&page=1&page_size=25
+/logs?kind=search&page=1&page_size=25
+/logs?kind=errors&page=1&page_size=25
+/logs?kind=imports&page=1&page_size=25
+```
+
+`page_size` 支持 `10`、`25`、`50`、`100`，页面以表格列表展示时间、事件、操作者、请求、目标和摘要详情。
+
+## 端口冲突示例
+
+如果服务器或本机已有 PostgreSQL 占用 `5432`，可以在 `.env` 中改宿主机端口：
+
+```env
+POSTGRES_PORT=15432
+DATABASE_URL=postgresql://sandbox:sandbox_password@localhost:15432/semantic_sandbox
+```
+
+如果 Qdrant 默认端口被占用：
+
+```env
+QDRANT_PORT=16333
+QDRANT_GRPC_PORT=16334
+```
+
+同时确认 `qdrant-service/.env` 没有把 `QDRANT_PORT` 覆盖回旧值。
 
 ## 旧 JSON 迁移
 

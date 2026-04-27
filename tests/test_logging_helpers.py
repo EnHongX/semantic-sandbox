@@ -59,6 +59,23 @@ class LoggingHelperTests(unittest.TestCase):
         self.assertEqual(searches[0]["query"], "hello")
         self.assertEqual(errors[0]["error"], "boom")
 
+    def test_audit_logs_support_count_and_offset(self) -> None:
+        for index in range(3):
+            common.append_audit_log({
+                "event": f"event_{index}",
+                "level": "info",
+                "actor": "web:admin",
+                "backend": "qdrant",
+                "method": "POST",
+                "path": "/unit",
+            })
+
+        self.assertEqual(common.count_audit_logs(backend="qdrant"), 3)
+        rows = common.list_audit_logs(backend="qdrant", limit=1, offset=1)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event"], "event_1")
+
 
 if __name__ == "__main__":
     unittest.main()

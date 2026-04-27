@@ -44,6 +44,10 @@ from semantic_sandbox_common import (  # noqa: E402
     build_documents_from_rows,
     build_documents_from_texts,
     clear_documents,
+    count_audit_logs,
+    count_error_logs,
+    count_import_jobs,
+    count_search_logs,
     create_import_job,
     delete_document,
     delete_documents,
@@ -158,16 +162,35 @@ def _log_audit(
     })
 
 
-def _logs_snapshot(kind: str, limit: int) -> dict:
-    limit = min(max(int(limit or 50), 1), 200)
+def _logs_snapshot(kind: str, page: int, page_size: int) -> dict:
+    page_size = min(max(int(page_size or 25), 10), 100)
+    page = max(int(page or 1), 1)
+    offset = (page - 1) * page_size
     kind = kind if kind in {"audit", "search", "errors", "imports"} else "audit"
+    total = {
+        "audit": count_audit_logs(backend=BACKEND),
+        "search": count_search_logs(backend=BACKEND),
+        "errors": count_error_logs(backend=BACKEND),
+        "imports": count_import_jobs(),
+    }[kind]
+    total_pages = max((total + page_size - 1) // page_size, 1)
+    if page > total_pages:
+        page = total_pages
+        offset = (page - 1) * page_size
     return {
         "kind": kind,
-        "limit": limit,
-        "audit_logs": list_audit_logs(backend=BACKEND, limit=limit) if kind == "audit" else [],
-        "search_logs": list_search_logs(backend=BACKEND, limit=limit) if kind == "search" else [],
-        "error_logs": list_error_logs(backend=BACKEND, limit=limit) if kind == "errors" else [],
-        "import_jobs": list_import_jobs(limit=limit) if kind == "imports" else [],
+        "limit": page_size,
+        "page": page,
+        "page_size": page_size,
+        "offset": offset,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "audit_logs": list_audit_logs(backend=BACKEND, limit=page_size, offset=offset) if kind == "audit" else [],
+        "search_logs": list_search_logs(backend=BACKEND, limit=page_size, offset=offset) if kind == "search" else [],
+        "error_logs": list_error_logs(backend=BACKEND, limit=page_size, offset=offset) if kind == "errors" else [],
+        "import_jobs": list_import_jobs(limit=page_size, offset=offset) if kind == "imports" else [],
     }
 
 
@@ -873,13 +896,15 @@ async def health_panel_page(request: Request):
 
 
 @app.get("/logs", response_class=HTMLResponse, include_in_schema=False)
-async def logs_page(request: Request, kind: str = "audit", limit: int = 50):
+async def logs_page(request: Request, kind: str = "audit", page: int = 1, page_size: int = 25, limit: int | None = None):
+    if limit is not None:
+        page_size = limit
     return templates.TemplateResponse(
         "logs.html",
         {
             "request": request,
             "backend": BACKEND,
-            "logs": _logs_snapshot(kind, limit),
+            "logs": _logs_snapshot(kind, page, page_size),
         },
     )
 

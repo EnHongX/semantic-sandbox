@@ -4,7 +4,7 @@
 
 本文档以 `qdrant-service` 为基准，覆盖当前 REST API 的请求代码、参数、正确请求、正确响应和常见错误。`weaviate-service`、`milvus-service` 的接口路径与请求/响应结构保持一致，差异见“多后端差异”。
 
-说明：本文档覆盖 API 对接路径；`/`、`/ingest`、`/documents`、`/health/panel`、`/logs` 等 HTML 页面和表单提交路由属于 Web UI 内部路由，不作为前端 API 对接接口。开启 `WEB_AUTH_ENABLED=1` 后，浏览器页面、Swagger UI 和 `/openapi.json` 需要先通过 `/login` 登录。
+说明：本文档覆盖 API 对接路径；`/`、`/ingest`、`/documents`、`/health/panel`、`/logs` 等 HTML 页面和表单提交路由属于 Web UI 内部路由，不作为前端 API 对接接口。开启 `WEB_AUTH_ENABLED=1` 后，浏览器页面、Swagger UI 和 `/openapi.json` 需要先通过 `/login` 登录；REST API 程序调用仍使用 `X-API-Key`。
 
 ## 1. 基础信息
 
@@ -91,16 +91,28 @@ WEB_AUTH_ENABLED=1
 WEB_USERNAME=admin
 WEB_PASSWORD=change_me_to_a_strong_password
 WEB_SESSION_SECRET=change_me_to_a_long_random_session_secret
+WEB_SESSION_HTTPS_ONLY=0
 ```
 
-浏览器访问 `/docs` 或 `/openapi.json` 如果被重定向到 `/login`，先登录即可；ApiPost、curl、后端服务调用仍应直接访问 `/api/*` 并携带 `X-API-Key`。
+浏览器访问 `/docs` 或 `/openapi.json` 如果被重定向到 `/login`，先登录即可；ApiPost、curl、后端服务调用仍应直接访问 `/api/*` 并携带 `X-API-Key`。本地 HTTP 调试使用 `WEB_SESSION_HTTPS_ONLY=0`；HTTPS 反向代理就绪后生产环境改为 `1`。
 
 日志口径：
 
 - `audit_logs`：登录、登出、API Key 鉴权失败、写入、上传、更新、删除、清空、重建索引。
 - `search_logs`：搜索 query 摘要、过滤条件、结果数、延迟。
 - `app_errors`：应用主动捕获的异常。
+- Web UI `/logs` 以表格列表展示日志，并支持 `kind`、`page`、`page_size` 查询参数，例如 `/logs?kind=audit&page=1&page_size=25`。
 - 普通访问日志不入库，建议走 Docker / Nginx / 日志系统。
+
+`.env.example` 关键配置关系：
+
+| 变量 | 说明 |
+|---|---|
+| `COMPOSE_PROFILES` | `qdrant,weaviate,milvus` 默认同时启动三套向量后端；只测一个就改成对应单值。 |
+| `POSTGRES_PORT` / `DATABASE_URL` | 改 PostgreSQL 宿主机端口时必须同步 DSN，例如端口改为 `15432` 时 DSN 也要用 `localhost:15432`。 |
+| `QDRANT_PORT` / `WEAVIATE_HTTP_PORT` / `MILVUS_PORT` | Docker 映射到宿主机的端口；本机冲突时可改。 |
+| `API_KEY` | REST API 调用密钥，放在 `X-API-Key` 请求头。 |
+| `WEB_PASSWORD` / `WEB_SESSION_SECRET` | 浏览器登录密码和签名 Cookie 密钥，生产必须替换。 |
 
 后文每个接口的“正确请求”代码块顺序固定为：`curl`、`Python requests`、浏览器 `fetch`、`Node.js 18+ fetch`。
 

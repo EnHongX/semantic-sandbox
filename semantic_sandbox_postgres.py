@@ -140,6 +140,13 @@ def _limit(value: int, *, default: int = 50, max_value: int = 200) -> int:
         return default
 
 
+def _offset(value: int) -> int:
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def load_documents() -> list[dict]:
     ensure_schema()
     with _get_pool().connection() as conn:
@@ -432,7 +439,7 @@ def save_search_log(entry: dict) -> None:
         conn.commit()
 
 
-def list_search_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
+def count_search_logs(*, backend: str = "") -> int:
     ensure_schema()
     backend = str(backend or "").strip()
     params: list[Any] = []
@@ -440,7 +447,22 @@ def list_search_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
     if backend:
         where = "WHERE backend = %s"
         params.append(backend)
-    params.append(_limit(limit))
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(f"SELECT COUNT(*) AS total FROM search_logs {where}", params)
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_search_logs(*, backend: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    backend = str(backend or "").strip()
+    params: list[Any] = []
+    where = ""
+    if backend:
+        where = "WHERE backend = %s"
+        params.append(backend)
+    params.extend([_limit(limit), _offset(offset)])
     with _get_pool().connection() as conn:
         with conn.cursor(row_factory=_dict_row()) as cur:
             cur.execute(
@@ -450,6 +472,7 @@ def list_search_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
                 {where}
                 ORDER BY created_at DESC
                 LIMIT %s
+                OFFSET %s
                 """,
                 params,
             )
@@ -487,7 +510,7 @@ def save_error_log(entry: dict) -> None:
         conn.commit()
 
 
-def list_error_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
+def count_error_logs(*, backend: str = "") -> int:
     ensure_schema()
     backend = str(backend or "").strip()
     params: list[Any] = []
@@ -495,7 +518,22 @@ def list_error_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
     if backend:
         where = "WHERE backend = %s"
         params.append(backend)
-    params.append(_limit(limit))
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(f"SELECT COUNT(*) AS total FROM app_errors {where}", params)
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_error_logs(*, backend: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    backend = str(backend or "").strip()
+    params: list[Any] = []
+    where = ""
+    if backend:
+        where = "WHERE backend = %s"
+        params.append(backend)
+    params.extend([_limit(limit), _offset(offset)])
     with _get_pool().connection() as conn:
         with conn.cursor(row_factory=_dict_row()) as cur:
             cur.execute(
@@ -505,6 +543,7 @@ def list_error_logs(*, backend: str = "", limit: int = 50) -> list[dict]:
                 {where}
                 ORDER BY created_at DESC
                 LIMIT %s
+                OFFSET %s
                 """,
                 params,
             )
@@ -558,7 +597,7 @@ def save_audit_log(entry: dict) -> None:
         conn.commit()
 
 
-def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50) -> list[dict]:
+def count_audit_logs(*, backend: str = "", event: str = "") -> int:
     ensure_schema()
     where_parts: list[str] = []
     params: list[Any] = []
@@ -571,7 +610,27 @@ def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50) -> l
         where_parts.append("event = %s")
         params.append(event)
     where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-    params.append(_limit(limit))
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute(f"SELECT COUNT(*) AS total FROM audit_logs {where}", params)
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    ensure_schema()
+    where_parts: list[str] = []
+    params: list[Any] = []
+    backend = str(backend or "").strip()
+    event = str(event or "").strip()
+    if backend:
+        where_parts.append("backend = %s")
+        params.append(backend)
+    if event:
+        where_parts.append("event = %s")
+        params.append(event)
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.extend([_limit(limit), _offset(offset)])
     with _get_pool().connection() as conn:
         with conn.cursor(row_factory=_dict_row()) as cur:
             cur.execute(
@@ -581,6 +640,7 @@ def list_audit_logs(*, backend: str = "", event: str = "", limit: int = 50) -> l
                 {where}
                 ORDER BY created_at DESC
                 LIMIT %s
+                OFFSET %s
                 """,
                 params,
             )
@@ -653,7 +713,16 @@ def load_import_job(job_id: str) -> dict | None:
     return dict(row["summary"]) if row else None
 
 
-def list_import_jobs(limit: int = 50) -> list[dict]:
+def count_import_jobs() -> int:
+    ensure_schema()
+    with _get_pool().connection() as conn:
+        with conn.cursor(row_factory=_dict_row()) as cur:
+            cur.execute("SELECT COUNT(*) AS total FROM import_jobs")
+            row = cur.fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_import_jobs(limit: int = 50, offset: int = 0) -> list[dict]:
     ensure_schema()
     with _get_pool().connection() as conn:
         with conn.cursor(row_factory=_dict_row()) as cur:
@@ -663,8 +732,9 @@ def list_import_jobs(limit: int = 50) -> list[dict]:
                 FROM import_jobs
                 ORDER BY created_at DESC
                 LIMIT %s
+                OFFSET %s
                 """,
-                (_limit(limit),),
+                (_limit(limit), _offset(offset)),
             )
             rows = cur.fetchall()
     return [dict(row["summary"]) for row in rows]
